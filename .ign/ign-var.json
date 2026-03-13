@@ -1,0 +1,12 @@
+{
+  "variables": {
+    "AUTHOR_EMAIL": "",
+    "AUTHOR_NAME": "tacogips",
+    "DESCRIPTION": "mailer",
+    "HAS_AUTHOR": false,
+    "HOMEPAGE": "https://github.com/user/repo",
+    "PROJECT_NAME": "mail-gateway",
+    "REPOSITORY": "https://github.com/user/repo",
+    "VERSION": "0.1.0"
+  }
+}
