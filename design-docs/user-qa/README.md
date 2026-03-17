@@ -17,6 +17,7 @@ Store questions, pending decisions, and items awaiting user approval.
 
 - [qa-example.md](./qa-example.md) - Example: Database Selection (template example)
 - [pending-example.md](./pending-example.md) - Example: CLI Output Format (template example)
+- [pending-mail-gateway-decisions.md](./pending-mail-gateway-decisions.md) - Resolved transport, retention, send-scope, and inline-image defaults for the mail gateway design
 
 ## Adding New Items
 
