@@ -1,24 +1,30 @@
-/**
- * Library module for mail-gateway
- */
-
-/**
- * Returns a greeting message for the given name.
- *
- * @param name - The name to greet
- * @returns A greeting string
- */
-export function greet(name: string): string {
-  return `Hello, ${name}!`;
-}
-
-/**
- * Adds two numbers together.
- *
- * @param a - First number
- * @param b - Second number
- * @returns The sum of a and b
- */
-export function add(a: number, b: number): number {
-  return a + b;
-}
+export {
+  getCredentialPathEnvVarName,
+  loadConfig,
+  resolveDefaultConfigPath,
+  validateConfig,
+} from "./config";
+export type {
+  AccountConfig,
+  CredentialConfig,
+  CredentialPathKey,
+  MailGatewayConfig,
+  StorageConfig,
+} from "./config";
+export type {
+  AccessMode,
+  AuthState,
+  AuthStatusReport,
+  MailAccount,
+  MailAttachment,
+  MailCapabilities,
+  MailMessage,
+  MailProvider,
+  MailThread,
+  ThreadConnection,
+  ThreadSearchInput,
+} from "./domain";
+export { AppError, EXIT_CODES } from "./errors";
+export { executeReaderGraphql } from "./graphql";
+export { runCli } from "./cli";
+export { MailGatewayReaderService } from "./service";

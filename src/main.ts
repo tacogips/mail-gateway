@@ -1,14 +1,4 @@
-/**
- * mail-gateway - Main entry point
- *
- * mailer
- */
+import { runCli } from "./cli";
 
-import { greet } from "./lib";
-
-function main(): void {
-  const message = greet("World");
-  console.log(message);
-}
-
-main();
+const exitCode = await runCli(process.argv.slice(2));
+process.exit(exitCode);
