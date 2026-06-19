@@ -79,13 +79,14 @@ Large features are split into multiple related plans with cross-references.
 
 | Plan | Status | Design Reference | Last Updated |
 |------|--------|------------------|--------------|
-| (No active plans yet) | - | - | - |
+| (No active plans) | - | - | - |
 
 ## Completed Plans
 
 | Plan | Completed | Design Reference |
 |------|-----------|------------------|
-| (No completed plans yet) | - | - |
+| credential-path-env-overrides | 2026-03-15 | design-docs/specs/design-mail-gateway.md#Configuration Model |
+| graphql-yoga-migration | 2026-03-16 | design-docs/specs/design-mail-gateway.md#GraphQL Design |
 
 ## Phase Dependencies (for impl-exec-auto)
 
@@ -96,7 +97,7 @@ Only plans from eligible phases should be read to minimize context loading.
 
 | Phase | Status | Depends On |
 |-------|--------|------------|
-| 1 | READY | - |
+| 1 | COMPLETED | - |
 | 2 | BLOCKED | Phase 1 |
 | 3 | BLOCKED | Phase 2 |
 | 4 | BLOCKED | Phase 3 |

@@ -1,7 +1,7 @@
 {
-  "lastUpdated": "2026-03-16T00:30:00Z",
+  "lastUpdated": "2026-06-19T15:30:00+09:00",
   "phases": {
-    "1": { "status": "READY" },
+    "1": { "status": "COMPLETED" },
     "2": { "status": "BLOCKED" },
     "3": { "status": "BLOCKED" },
     "4": { "status": "BLOCKED" }

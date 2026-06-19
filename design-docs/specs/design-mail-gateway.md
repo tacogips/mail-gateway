@@ -4,7 +4,7 @@ This document defines the product and technical design for an AI-oriented mail g
 
 ## Overview
 
-Phase 1 ships one Bun-based binary:
+Phase 1 ships one Swift Package Manager binary:
 
 - `mail-gateway-reader`: read-only access to configured mail accounts
 

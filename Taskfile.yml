@@ -2,6 +2,8 @@ version: '3'
 
 vars:
   PROJECT_NAME: mail-gateway
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo 0.1.0
 
 tasks:
   default:
@@ -9,71 +11,104 @@ tasks:
     cmds:
       - task --list
 
-  install:
-    desc: Install dependencies
-    cmds:
-      - bun install
-
-  dev:
-    desc: Run in development mode with watch
-    cmds:
-      - bun run dev
-
   build:
-    desc: Build the project
+    desc: Build all Swift products
     cmds:
-      - bun run build
+      - swift build -c release
 
-  start:
-    desc: Run the application
+  build-reader:
+    desc: Build the Swift reader command product
     cmds:
-      - bun run start
+      - swift build -c release --product mail-gateway-reader
 
   test:
-    desc: Run tests with Bun
+    desc: Run Swift smoke tests
     cmds:
-      - bun run test
-
-  test-watch:
-    desc: Run tests in watch mode with Bun
-    cmds:
-      - bun run test:watch
-
-  test-verbose:
-    desc: Run tests with verbose output
-    cmds:
-      - bun test --reporter=verbose
-
-  typecheck:
-    desc: Run TypeScript type checking
-    cmds:
-      - bun run typecheck
-
-  fmt:
-    desc: Format code with prettier
-    cmds:
-      - bun run format
-
-  fmt-check:
-    desc: Check code formatting
-    cmds:
-      - bun run format:check
-
-  lint:
-    desc: Run all lints (format check + typecheck)
-    cmds:
-      - task: fmt-check
-      - task: typecheck
-
-  clean:
-    desc: Clean build artifacts
-    cmds:
-      - bun run clean
+      - swift run mail-gateway-swift-smoke-tests
 
   ci:
-    desc: Run all CI checks
+    desc: Run Swift verification
     cmds:
-      - task: fmt-check
-      - task: typecheck
-      - task: test
       - task: build
+      - task: test
+
+  clean:
+    desc: Clean build and release artifacts
+    cmds:
+      - rm -rf .build release
+
+  install-reader:
+    desc: Install the Swift reader command
+    vars:
+      INSTALL_PREFIX: '{{default "/usr/local" .PREFIX}}'
+    cmds:
+      - swift build -c release --product mail-gateway-reader
+      - mkdir -p "{{.INSTALL_PREFIX}}/bin"
+      - install .build/release/mail-gateway-reader "{{.INSTALL_PREFIX}}/bin/mail-gateway-reader"
+
+  release:clean:
+    desc: Clean release artifacts
+    cmds:
+      - rm -rf release
+
+  release:prepare:
+    desc: Run verification before release packaging
+    cmds:
+      - task: ci
+
+  release:binary:
+    desc: Build a local Swift binary archive
+    vars:
+      RELEASE_DIR: 'release/{{.PROJECT_NAME}}-{{.VERSION}}'
+    cmds:
+      - task: release:prepare
+      - mkdir -p {{.RELEASE_DIR}}/bin
+      - install .build/release/mail-gateway-reader {{.RELEASE_DIR}}/bin/mail-gateway-reader
+      - cd release && tar -czf {{.PROJECT_NAME}}-{{.VERSION}}.tar.gz $(basename {{.RELEASE_DIR}})
+      - echo "Built release/{{.PROJECT_NAME}}-{{.VERSION}}.tar.gz"
+
+  release:checksums:
+    desc: Generate SHA256 checksums for release assets
+    cmds:
+      - test -d release
+      - cd release && shasum -a 256 *.tar.gz > SHA256SUMS.txt
+      - echo "Wrote release/SHA256SUMS.txt"
+
+  release:nix:
+    desc: Validate Nix flake for release
+    cmds:
+      - nix flake check
+
+  release:all:
+    desc: Build all local release artifacts
+    cmds:
+      - task: release:clean
+      - task: release:binary
+      - task: release:checksums
+
+  release:github:
+    desc: Publish release assets to GitHub Release
+    vars:
+      TAG: 'v{{.VERSION}}'
+    cmds:
+      - gh auth status
+      - task: release:nix
+      - task: release:all
+      - |
+        if git rev-parse "{{.TAG}}" >/dev/null 2>&1; then
+          echo "Tag {{.TAG}} already exists"
+        else
+          git tag -a "{{.TAG}}" -m "Release {{.TAG}}"
+          git push origin "{{.TAG}}"
+          echo "Created and pushed tag {{.TAG}}"
+        fi
+      - |
+        gh release view "{{.TAG}}" >/dev/null 2>&1 || \
+          gh release create "{{.TAG}}" --title "{{.PROJECT_NAME}} {{.TAG}}" --generate-notes
+      - gh release upload "{{.TAG}}" release/* --clobber
+      - echo "Published GitHub release {{.TAG}}"
+
+  release:
+    desc: Full Swift release
+    cmds:
+      - task: release:github

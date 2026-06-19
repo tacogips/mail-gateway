@@ -4,7 +4,6 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/release-24.11";
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -12,26 +11,26 @@
     {
       self,
       nixpkgs,
-      nixpkgs-unstable,
       flake-utils,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs { inherit system; };
-        pkgs-unstable = import nixpkgs-unstable { inherit system; };
 
         devPackages = with pkgs; [
-          # Bun runtime
-          pkgs-unstable.bun
-
-          # TypeScript tooling
-          pkgs-unstable.typescript
-          pkgs-unstable.typescript-language-server
-          nodePackages.prettier
+          # Swift tooling
+          swift
+          swiftpm
+          sourcekit-lsp
 
           # Development tools
+          coreutils
+          curl
           fd
+          git
+          gnutar
+          gzip
           gnused
           gh
           go-task
@@ -43,9 +42,8 @@
           packages = devPackages;
 
           shellHook = ''
-            echo "TypeScript development environment ready"
-            echo "Bun version: $(bun --version)"
-            echo "TypeScript version: $(tsc --version)"
+            echo "Swift development environment ready"
+            echo "Swift version: $(swift --version | head -n 1)"
             echo "Task version: $(task --version 2>/dev/null || echo 'not available')"
           '';
         };

@@ -129,48 +129,41 @@ feat: implement user authentication system
 
 ## Project Overview
 
-This is mail-gateway - a TypeScript project with Bun runtime and Nix flake development environment support.
+This is mail-gateway - a Swift Package Manager project with Nix flake development environment support.
 
 ## Development Environment
-- **Language**: TypeScript
-- **Runtime**: Bun
-- **Build Tool**: Bun (with go-task for automation)
+- **Language**: Swift
+- **Runtime**: Native Swift command-line executable
+- **Build Tool**: Swift Package Manager (with go-task for automation)
 - **Environment Manager**: Nix flakes + direnv
 - **Development Shell**: Run `nix develop` or use direnv to activate
 
 ## Project Structure
 ```
 .
-├── flake.nix          # Nix flake configuration for TypeScript/Bun development
+├── Package.swift      # Swift Package Manager manifest
+├── flake.nix          # Nix flake configuration for Swift development
 ├── flake.lock         # Locked flake dependencies
-├── package.json       # Package manifest
-├── bun.lockb          # Bun lock file
-├── tsconfig.json      # TypeScript configuration (maximum strictness)
 ├── .envrc             # direnv configuration
-├── src/               # Source code
-│   ├── main.ts        # Entry point
-│   ├── lib.ts         # Library code
-│   └── lib.test.ts    # Test files
+├── Sources/           # Swift source code
+│   ├── MailGatewayCore/
+│   ├── MailGatewayReader/
+│   └── MailGatewaySwiftSmokeTests/
 └── .gitignore         # Git ignore patterns
 ```
 
 ## Development Tools Available
-- `bun` - JavaScript/TypeScript runtime and package manager
-- `tsc` - TypeScript compiler
-- `typescript-language-server` - TypeScript language server (LSP)
-- `prettier` - Code formatter
+- `swift` - Swift compiler and package manager
+- `sourcekit-lsp` - Swift language server
 - `task` - Task runner (go-task)
 
-## TypeScript Code Development
+## Swift Code Development
 
-**IMPORTANT**: When writing TypeScript code, you (the LLM model) MUST use the specialized agents:
+When writing Swift code, use the Swift coding conventions established by this repository:
 
-1. **ts-coding agent** (`.claude/agents/ts-coding.md`): For writing, refactoring, and implementing TypeScript code
-2. **check-and-test-after-modify agent** (`.claude/agents/check-and-test-after-modify.md`): MUST be invoked automatically after ANY TypeScript file modifications
-
-**Coding Standards**: Refer to `.claude/skills/ts-coding-standards/` for TypeScript coding conventions, project layout, error handling, type safety, and async patterns.
-
-**TypeScript Configuration**: This project uses maximum TypeScript strictness. See `tsconfig.json` for the complete strict configuration.
+- Closed value sets should be typed as Swift enums with stable raw values.
+- Public DTOs should prefer explicit structs/enums over untyped dictionaries unless JSON envelope flexibility is required.
+- Run `swift build` and `swift run mail-gateway-swift-smoke-tests` after Swift changes.
 
 ## Design Documentation
 
@@ -249,7 +242,7 @@ When implementing from a plan:
 
 1. Read the implementation plan from `impl-plans/active/`
 2. Select a subtask (consider parallelization and dependencies)
-3. Use the `ts-coding` agent with the deliverable specifications
+3. Implement the task following the deliverable specifications
 4. Update the plan's progress log and completion criteria
 5. When all tasks complete, move plan to `impl-plans/completed/`
 
@@ -312,4 +305,4 @@ Example subtask format:
 - Use direnv for automatic environment activation
 - Private environment variables should be managed in `tacogips/kinko` and loaded via `kinko direnv export`; `.envrc.private` is not sourced by default
 - All development dependencies are managed through flake.nix
-- Runtime is Bun, which provides fast TypeScript execution and built-in testing
+- Runtime is the Swift command-line executable built by Swift Package Manager

@@ -1,16 +1,9 @@
-# Dependencies
-node_modules/
+# Swift Package Manager
+.build/
+Package.resolved
 
-# Build output
-dist/
-*.tsbuildinfo
-
-# SvelteKit
-**/.svelte-kit/
-**/static/build/
-
-# Bun (binary lockfile - we use text lockfile bun.lock instead)
-bun.lockb
+# Release artifacts
+release/
 
 # Environment files
 .env
@@ -36,10 +29,6 @@ result-*
 # Logs
 logs/
 *.log
-npm-debug.log*
-
-# Test coverage
-coverage/
 
 # Temporary files
 tmp/
