@@ -87,6 +87,7 @@ Large features are split into multiple related plans with cross-references.
 |------|-----------|------------------|
 | credential-path-env-overrides | 2026-03-15 | design-docs/specs/design-mail-gateway.md#Configuration Model |
 | graphql-yoga-migration | 2026-03-16 | design-docs/specs/design-mail-gateway.md#GraphQL Design |
+| message-file-materialization | 2026-06-20 | design-docs/specs/design-mail-gateway.md#attachment-handling |
 
 ## Phase Dependencies (for impl-exec-auto)
 

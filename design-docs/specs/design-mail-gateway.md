@@ -143,9 +143,13 @@ default_label_ids = ["INBOX", "IMPORTANT"]
 - account selection is always explicit in message and thread queries
 - provider-specific details are exposed in a namespaced way only when the canonical model is insufficient
 - send operations exist only in `mail-gateway`
-- filesystem materialization paths are returned as structured metadata, not raw stdout text
+- filesystem materialization paths are returned only by explicit gateway download
+  commands, not by GraphQL message-file metadata
 - nested thread and message queries return attachment metadata only; explicit hydration is performed only through `attachment(...)`
 - attachment payloads are never inlined into GraphQL responses
+- body and temporary-file payloads are never inlined into GraphQL responses;
+  GraphQL returns vendor-neutral `downloadKey` metadata, and file bytes are
+  retrieved only by an explicit gateway download command
 
 ### Canonical Root Types
 
@@ -158,6 +162,7 @@ type Query {
   threads(input: ThreadSearchInput!): ThreadConnection!
   thread(accountId: ID!, threadId: ID!): MailThread
   message(accountId: ID!, messageId: ID!): MailMessage
+  messageFileSet(accountId: ID!, messageId: ID!): MailMessageFileSet!
   attachment(accountId: ID!, messageId: ID!, attachmentId: ID!): MailAttachment
 }
 ```
@@ -250,7 +255,31 @@ type MailAttachment {
   mimeType: String!
   sizeBytes: Int
   localPath: String
+  downloadKey: String
   materializationState: AttachmentMaterializationState!
+}
+
+type MailMessageFileSet {
+  accountId: ID!
+  messageId: ID!
+  hasFiles: Boolean!
+  files: [MailMessageFile!]!
+}
+
+type MailMessageFile {
+  kind: MessageMaterializedFileKind!
+  filename: String!
+  hasPayload: Boolean!
+  mimeType: String
+  sizeBytes: Int
+  downloadKey: String!
+  materializationState: AttachmentMaterializationState!
+}
+
+enum MessageMaterializedFileKind {
+  BODY_TEXT
+  BODY_HTML
+  TEMPORARY_FILE
 }
 
 type MailThreadEdge {
@@ -329,8 +358,12 @@ Phase 1 does not expose mutations. Phase 2 introduces `sendMessage` for new outb
 
 ### Materialization Rules
 
-- nested attachment metadata returned from `threads`, `thread`, and `message` must not trigger payload download or local writes
-- only the top-level `attachment(...)` query may fetch payload bytes and materialize to disk
+- nested attachment, body, and temporary-file metadata returned from `threads`,
+  `thread`, and `message` must not include payload bytes
+- GraphQL returns `downloadKey` values that abstract provider-specific Gmail
+  message part ids, attachment ids, and temporary cache handles
+- only explicit gateway download commands may fetch payload bytes and
+  materialize them to disk
 - non-inline attachments are written under `storage.attachment_dir`
 - the path format is deterministic and collision-safe: `<attachment_dir>/<account_id>/<message_id>/<attachment_id>-<sanitized_filename>`
 - if the file already exists and its metadata matches, the cached path is reused
@@ -338,6 +371,9 @@ Phase 1 does not expose mutations. Phase 2 introduces `sendMessage` for new outb
 - materialized files persist until explicit cleanup through `cache prune`
 - attachments are always exchanged as files and normalized local paths
 - this avoids embedding large binary or base64 payloads in GraphQL responses, which keeps AI token consumption bounded
+- LLM-oriented callers should inspect GraphQL metadata first and download only
+  the files they truly need, avoiding token-heavy body expansion in normal
+  prompt input
 
 ### Reader-Binary Interpretation
 
