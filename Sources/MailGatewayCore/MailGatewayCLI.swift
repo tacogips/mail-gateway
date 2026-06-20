@@ -79,7 +79,7 @@ public struct MailGatewayCLI {
         case "file":
             return try runFile(
                 subcommand: subcommand,
-                flags: parsed.flags,
+                parsed: parsed,
                 configPath: configPath,
                 environment: environment,
                 pretty: pretty
@@ -185,7 +185,7 @@ public struct MailGatewayCLI {
 
     private func runFile(
         subcommand: String?,
-        flags: [String: StringOrBool],
+        parsed: ParsedArgs,
         configPath: String?,
         environment: [String: String],
         pretty: Bool
@@ -197,18 +197,24 @@ public struct MailGatewayCLI {
                 exitCode: .invalidCliUsage
             )
         }
-        guard let downloadKey = try getStringFlag(flags, "key") else {
+        let downloadKeys = try getStringFlags(parsed.repeatedFlags, "key")
+        guard !downloadKeys.isEmpty else {
             throw MailGatewayError(
                 "file download requires --key",
                 code: .invalidArgument,
                 exitCode: .invalidCliUsage
             )
         }
+        let service = try readerService(configPath: configPath, environment: environment)
+        let outputDirectory = try getStringFlag(parsed.flags, "output-dir")
+        if downloadKeys.count == 1 {
+            return success(
+                try service.downloadFile(downloadKey: downloadKeys[0], outputDirectory: outputDirectory),
+                pretty: pretty
+            )
+        }
         return success(
-            try readerService(configPath: configPath, environment: environment).downloadFile(
-                downloadKey: downloadKey,
-                outputDirectory: try getStringFlag(flags, "output-dir")
-            ),
+            try service.downloadFiles(downloadKeys: downloadKeys, outputDirectory: outputDirectory),
             pretty: pretty
         )
     }

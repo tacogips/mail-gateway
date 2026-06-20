@@ -16,6 +16,11 @@ private struct MessageFileMetadataInput {
     let mimeType: String
 }
 
+private enum MessageFileDownloadLayout {
+    case flat
+    case messageScoped
+}
+
 extension MailGatewayReaderService {
     public func getMessageFileSet(accountId: String, messageId: String) throws -> [String: Any] {
         _ = try requireAccount(accountId)
@@ -24,6 +29,31 @@ extension MailGatewayReaderService {
 
     public func downloadFile(downloadKey: String, outputDirectory: String?) throws -> [String: Any] {
         let key = try decodeMessageFileDownloadKey(downloadKey)
+        return try downloadFile(key: key, rawDownloadKey: downloadKey, outputDirectory: outputDirectory, layout: .flat)
+    }
+
+    public func downloadFiles(downloadKeys: [String], outputDirectory: String?) throws -> [String: Any] {
+        let files = try downloadKeys.map { downloadKey in
+            let key = try decodeMessageFileDownloadKey(downloadKey)
+            return try downloadFile(
+                key: key,
+                rawDownloadKey: downloadKey,
+                outputDirectory: outputDirectory,
+                layout: .messageScoped
+            )
+        }
+        return [
+            "fileCount": files.count,
+            "files": files
+        ]
+    }
+
+    private func downloadFile(
+        key: MessageFileDownloadKey,
+        rawDownloadKey: String,
+        outputDirectory: String?,
+        layout: MessageFileDownloadLayout
+    ) throws -> [String: Any] {
         _ = try requireAccount(key.accountId)
         let sourceURL = messageFileURL(for: key)
         guard FileManager.default.isReadableFile(atPath: sourceURL.path) else {
@@ -31,14 +61,15 @@ extension MailGatewayReaderService {
                 "Message file is not materialized locally",
                 code: .attachmentNotFound,
                 exitCode: .graphqlExecutionError,
-                details: ["downloadKey": downloadKey]
+                details: ["downloadKey": rawDownloadKey]
             )
         }
 
         let outputURL = try copiedFileURL(
             sourceURL: sourceURL,
-            filename: key.filename,
-            outputDirectory: outputDirectory
+            key: key,
+            outputDirectory: outputDirectory,
+            layout: layout
         )
         return messageFileMetadata(
             MessageFileMetadataInput(
@@ -116,12 +147,21 @@ extension MailGatewayReaderService {
         }
     }
 
-    private func copiedFileURL(sourceURL: URL, filename: String, outputDirectory: String?) throws -> URL {
+    private func copiedFileURL(
+        sourceURL: URL,
+        key: MessageFileDownloadKey,
+        outputDirectory: String?,
+        layout: MessageFileDownloadLayout
+    ) throws -> URL {
         guard let outputDirectory = nonBlank(outputDirectory) else {
             return sourceURL
         }
-        let directory = try validateDownloadOutputDirectory(outputDirectory)
-        let outputURL = directory.appendingPathComponent(filename)
+        let directory = scopedOutputDirectory(
+            root: try validateDownloadOutputDirectory(outputDirectory),
+            key: key,
+            layout: layout
+        )
+        let outputURL = directory.appendingPathComponent(key.filename)
         do {
             try FileManager.default.createDirectory(
                 at: directory,
@@ -145,6 +185,21 @@ extension MailGatewayReaderService {
             )
         }
         return outputURL
+    }
+
+    private func scopedOutputDirectory(
+        root: URL,
+        key: MessageFileDownloadKey,
+        layout: MessageFileDownloadLayout
+    ) -> URL {
+        switch layout {
+        case .flat:
+            return root
+        case .messageScoped:
+            return root
+                .appendingPathComponent(sanitizedPathComponent(key.accountId), isDirectory: true)
+                .appendingPathComponent(sanitizedPathComponent(key.messageId), isDirectory: true)
+        }
     }
 
     private func messageDirectory(accountId: String, messageId: String) -> URL {

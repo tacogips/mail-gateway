@@ -3,6 +3,7 @@ import Foundation
 struct ParsedArgs {
     let positionals: [String]
     let flags: [String: StringOrBool]
+    let repeatedFlags: [String: [StringOrBool]]
 }
 
 enum StringOrBool {
@@ -13,6 +14,7 @@ enum StringOrBool {
 func parseArguments(_ arguments: [String]) throws -> ParsedArgs {
     var positionals: [String] = []
     var flags: [String: StringOrBool] = [:]
+    var repeatedFlags: [String: [StringOrBool]] = [:]
     let booleanFlags: Set<String> = ["all", "pretty"]
     var index = 0
 
@@ -32,7 +34,9 @@ func parseArguments(_ arguments: [String]) throws -> ParsedArgs {
         let split = flagBody.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
         let key = String(split[0])
         if split.count == 2 {
-            flags[key] = .string(String(split[1]))
+            let value = StringOrBool.string(String(split[1]))
+            flags[key] = value
+            repeatedFlags[key, default: []].append(value)
             index += 1
             continue
         }
@@ -40,23 +44,29 @@ func parseArguments(_ arguments: [String]) throws -> ParsedArgs {
         let next = index + 1 < arguments.count ? arguments[index + 1] : nil
         if booleanFlags.contains(key),
            next == nil || next != "true" && next != "false" {
-            flags[key] = .bool(true)
+            let value = StringOrBool.bool(true)
+            flags[key] = value
+            repeatedFlags[key, default: []].append(value)
             index += 1
             continue
         }
 
         if let next,
            !next.hasPrefix("--") {
-            flags[key] = .string(next)
+            let value = StringOrBool.string(next)
+            flags[key] = value
+            repeatedFlags[key, default: []].append(value)
             index += 2
             continue
         }
 
-        flags[key] = .bool(true)
+        let value = StringOrBool.bool(true)
+        flags[key] = value
+        repeatedFlags[key, default: []].append(value)
         index += 1
     }
 
-    return ParsedArgs(positionals: positionals, flags: flags)
+    return ParsedArgs(positionals: positionals, flags: flags, repeatedFlags: repeatedFlags)
 }
 
 func getStringFlag(_ flags: [String: StringOrBool], _ name: String) throws -> String? {
@@ -68,6 +78,17 @@ func getStringFlag(_ flags: [String: StringOrBool], _ name: String) throws -> St
         return value
     case .bool:
         throw MailGatewayError("--\(name) requires a value", code: .invalidArgument, exitCode: .invalidCliUsage)
+    }
+}
+
+func getStringFlags(_ flags: [String: [StringOrBool]], _ name: String) throws -> [String] {
+    try (flags[name] ?? []).map { value in
+        switch value {
+        case .string(let value):
+            return value
+        case .bool:
+            throw MailGatewayError("--\(name) requires a value", code: .invalidArgument, exitCode: .invalidCliUsage)
+        }
     }
 }
 

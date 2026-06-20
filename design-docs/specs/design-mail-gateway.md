@@ -149,7 +149,8 @@ default_label_ids = ["INBOX", "IMPORTANT"]
 - attachment payloads are never inlined into GraphQL responses
 - body and temporary-file payloads are never inlined into GraphQL responses;
   GraphQL returns vendor-neutral `downloadKey` metadata, and file bytes are
-  retrieved only by an explicit gateway download command
+  retrieved only by an explicit gateway download command. Callers may repeat
+  `--key` to download multiple selected files in one gateway invocation.
 
 ### Canonical Root Types
 
@@ -363,7 +364,9 @@ Phase 1 does not expose mutations. Phase 2 introduces `sendMessage` for new outb
 - GraphQL returns `downloadKey` values that abstract provider-specific Gmail
   message part ids, attachment ids, and temporary cache handles
 - only explicit gateway download commands may fetch payload bytes and
-  materialize them to disk
+  materialize them to disk; batch downloads scope copied files by
+  `<account_id>/<message_id>/` under the requested output directory to avoid
+  filename collisions
 - non-inline attachments are written under `storage.attachment_dir`
 - the path format is deterministic and collision-safe: `<attachment_dir>/<account_id>/<message_id>/<attachment_id>-<sanitized_filename>`
 - if the file already exists and its metadata matches, the cached path is reused

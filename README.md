@@ -29,6 +29,7 @@ mail-gateway-reader auth revoke --config ./config.toml --credential gmail-person
 mail-gateway-reader cache prune --config ./config.toml --account personal
 mail-gateway-reader graphql --config ./config.toml --query '{ accounts { id emailAddress } }'
 mail-gateway-reader file download --config ./config.toml --key <download-key> --output-dir ./downloads
+mail-gateway-reader file download --config ./config.toml --key <key-1> --key <key-2> --output-dir ./downloads
 ```
 
 The Swift migration preserves the current local baseline: config validation,
@@ -37,8 +38,10 @@ attachment-cache lookup, cache pruning, and a read-only GraphQL-shaped JSON
 envelope over accounts, threads, thread, message, attachment, and message file
 metadata queries. File payloads are not returned through GraphQL. GraphQL file
 metadata uses vendor-neutral `downloadKey` values; callers download a concrete
-file only through `mail-gateway-reader file download`. Live Gmail API retrieval
-and send workflows remain outside the current implemented baseline.
+file only through `mail-gateway-reader file download`. Repeating `--key`
+downloads multiple files in one command and returns a `files` array; single-key
+downloads keep returning the existing single-file JSON object. Live Gmail API
+retrieval and send workflows remain outside the current implemented baseline.
 
 ## Configuration
 
