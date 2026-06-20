@@ -10,6 +10,7 @@ func runSmokeTests() throws {
     }
 
     try testRelativeConfig(cleanup: &cleanup)
+    try testHelpOutput()
     try testCredentialEnvFallback(cleanup: &cleanup)
     try testCredentialEnvOverride(cleanup: &cleanup)
     try testPrettyConfigValidation(cleanup: &cleanup)
@@ -26,6 +27,19 @@ func runSmokeTests() throws {
     try testMissingAccountGraphQLError(cleanup: &cleanup)
     try testAccountCachePrune(cleanup: &cleanup)
     try testInvalidCachePruneOptions(cleanup: &cleanup)
+}
+
+func testHelpOutput() throws {
+    let rootHelp = runCli(["--help"])
+    try assert(rootHelp.exitCode == 0, "root help should succeed")
+    try assert(
+        rootHelp.stdout.contains("--key <download-key> [--key <download-key> ...]"),
+        "root help should document repeated download keys"
+    )
+    let fileHelp = runCli(["file", "download", "--help"])
+    try assert(fileHelp.exitCode == 0, "file download help should succeed")
+    try assert(fileHelp.stdout.contains("Repeat this option"), "file download help should describe batch download")
+    try assert(fileHelp.stdout.contains("\"fileCount\""), "file download help should describe batch output")
 }
 
 func testRelativeConfig(cleanup: inout [String]) throws {

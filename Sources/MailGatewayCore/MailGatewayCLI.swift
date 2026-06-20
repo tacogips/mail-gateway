@@ -9,6 +9,9 @@ public struct MailGatewayCLI {
     ) -> MailGatewayCommandResult {
         do {
             let parsed = try parseArguments(arguments)
+            if shouldShowHelp(parsed) {
+                return helpResult(for: parsed)
+            }
             let configPath = try getStringFlag(parsed.flags, "config") ?? environment["MAIL_GATEWAY_CONFIG"]
             let pretty = try getBooleanFlag(parsed.flags, "pretty")
             return try runParsedCommand(
@@ -35,6 +38,22 @@ public struct MailGatewayCLI {
                 stderr: jsonString(errorOutput(appError), pretty: true) + "\n"
             )
         }
+    }
+
+    private func shouldShowHelp(_ parsed: ParsedArgs) -> Bool {
+        parsed.flags["help"] != nil || parsed.positionals.first == "help"
+    }
+
+    private func helpResult(for parsed: ParsedArgs) -> MailGatewayCommandResult {
+        let topic = parsed.positionals.first == "help"
+            ? parsed.positionals.dropFirst().first
+            : parsed.positionals.first
+        let text = topic == "file" ? fileHelpText : rootHelpText
+        return MailGatewayCommandResult(
+            exitCode: MailGatewayExitCode.success.rawValue,
+            stdout: text,
+            stderr: ""
+        )
     }
 
     private func runParsedCommand(
@@ -236,3 +255,55 @@ public struct MailGatewayCLI {
         )
     }
 }
+
+private let rootHelpText = """
+mail-gateway-reader
+
+Usage:
+  mail-gateway-reader [--config <path>] [--pretty] <command>
+
+Commands:
+  graphql --query <query>
+  config validate
+  auth <login|revoke|status> --credential <id>
+  cache prune [--account <id>|--all]
+  file download --key <download-key> [--key <download-key> ...] [--output-dir <dir>]
+
+File downloads:
+  GraphQL returns file metadata and vendor-neutral downloadKey values, not file
+  payloads. Use file download when a caller explicitly needs selected file
+  bytes. Repeat --key to download multiple selected files in one command.
+
+  Single-key downloads return a single file JSON object with localPath.
+  Multi-key downloads return {"fileCount": n, "files": [...]} and copy files
+  under <output-dir>/<accountId>/<messageId>/<filename> to avoid collisions.
+
+Examples:
+  mail-gateway-reader file download --config ./config.toml --key <key> --output-dir ./downloads
+  mail-gateway-reader file download --config ./config.toml --key <key-1> --key <key-2> --output-dir ./downloads
+
+"""
+
+private let fileHelpText = """
+mail-gateway-reader file download
+
+Usage:
+  mail-gateway-reader file download --key <download-key> [--key <download-key> ...] [--output-dir <dir>]
+
+Options:
+  --key <download-key>    Vendor-neutral key returned by GraphQL file metadata.
+                          Repeat this option to download multiple files.
+  --output-dir <dir>      Optional destination under storage.attachment_dir,
+                          storage.cache_dir, or the system temporary directory.
+
+Output:
+  With one --key, returns the existing single-file JSON object:
+    {"kind":"BODY_TEXT","filename":"body.txt","localPath":"..."}
+
+  With multiple --key values, returns:
+    {"fileCount":2,"files":[...]}
+
+  Batch downloads copy files under <output-dir>/<accountId>/<messageId>/<filename>
+  so files from different messages cannot overwrite each other.
+
+"""
