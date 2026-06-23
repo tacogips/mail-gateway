@@ -8,16 +8,19 @@ func executeReaderGraphQL(
     do {
         return (["data": try executeReaderGraphQLData(service: service, query: query)], .success)
     } catch let error as MailGatewayError where error.exitCode == .graphqlExecutionError {
-        return ([
+        let extensions: [String: Any] = [
+            "code": error.code.rawValue,
+            "exitCode": error.exitCode.rawValue
+        ]
+        let errors: [[String: Any]] = [[
+            "message": error.message,
+            "extensions": extensions
+        ]]
+        let body: [String: Any] = [
             "data": NSNull(),
-            "errors": [[
-                "message": error.message,
-                "extensions": [
-                    "code": error.code.rawValue,
-                    "exitCode": error.exitCode.rawValue
-                ]
-            ]]
-        ], .graphqlExecutionError)
+            "errors": errors
+        ]
+        return (body, .graphqlExecutionError)
     }
 }
 

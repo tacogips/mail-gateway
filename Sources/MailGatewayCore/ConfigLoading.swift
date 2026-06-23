@@ -17,7 +17,26 @@ private struct CredentialPathRequest {
 }
 
 public enum MailGatewayConfigLoader {
+    private static let defaultCredentialId = "gmail-personal"
+    private static let defaultAccountId = "personal"
+
     public static func getCredentialPathEnvVarName(credentialId: String, pathKey: String) -> String {
+        let safeSuffix = credentialEnvSuffix(credentialId)
+        if pathKey == "oauth_client_secret_path" {
+            return "MAIL_GATEWAY_CREDENTIAL_\(safeSuffix)_OAUTH_CLIENT_SECRET_PATH"
+        }
+        return "MAIL_GATEWAY_CREDENTIAL_\(safeSuffix)_TOKEN_STORE_PATH"
+    }
+
+    public static func getCredentialJSONEnvVarName(credentialId: String, valueKey: String) -> String {
+        let safeSuffix = credentialEnvSuffix(credentialId)
+        if valueKey == "oauth_client_secret_json" {
+            return "MAIL_GATEWAY_CREDENTIAL_\(safeSuffix)_OAUTH_CLIENT_SECRET_JSON"
+        }
+        return "MAIL_GATEWAY_CREDENTIAL_\(safeSuffix)_TOKEN_STORE_JSON"
+    }
+
+    private static func credentialEnvSuffix(_ credentialId: String) -> String {
         let suffix = credentialId
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .map { character -> Character in
@@ -26,11 +45,7 @@ public enum MailGatewayConfigLoader {
         let normalized = String(suffix)
             .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
             .uppercased()
-        let safeSuffix = normalized.isEmpty ? "CREDENTIAL" : normalized
-        if pathKey == "oauth_client_secret_path" {
-            return "MAIL_GATEWAY_CREDENTIAL_\(safeSuffix)_OAUTH_CLIENT_SECRET_PATH"
-        }
-        return "MAIL_GATEWAY_CREDENTIAL_\(safeSuffix)_TOKEN_STORE_PATH"
+        return normalized.isEmpty ? "CREDENTIAL" : normalized
     }
 
     public static func resolveDefaultConfigPath(
@@ -53,13 +68,19 @@ public enum MailGatewayConfigLoader {
         configPath: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> MailGatewayConfig {
+        let explicitConfigPath = nonBlank(configPath) ?? nonBlank(environment["MAIL_GATEWAY_CONFIG"])
+        let usesImplicitDefaultConfig = explicitConfigPath == nil
         let selectedConfigPath = normalizedPath(
-            configPath ?? environment["MAIL_GATEWAY_CONFIG"] ?? resolveDefaultConfigPath(environment: environment)
+            explicitConfigPath ?? resolveDefaultConfigPath(environment: environment)
         )
         let source: String
         do {
             source = try String(contentsOfFile: selectedConfigPath, encoding: .utf8)
         } catch {
+            if usesImplicitDefaultConfig,
+               !FileManager.default.fileExists(atPath: selectedConfigPath) {
+                return try defaultConfig(configPath: selectedConfigPath, environment: environment)
+            }
             throw MailGatewayError(
                 "Failed to read config: \(selectedConfigPath)",
                 code: .configInvalid,
@@ -92,13 +113,7 @@ public enum MailGatewayConfigLoader {
         try ensureUnique(credentials.map(\.tokenStorePath), context: "credentials.token_store_path")
         try validateAccountCredentialLinks(credentials: credentials, accounts: accounts)
 
-        for credential in credentials
-            where !FileManager.default.isReadableFile(atPath: credential.oauthClientSecretPath) {
-            throw configError(
-                "credentials.\(credential.id).oauth_client_secret_path is not readable: " +
-                    credential.oauthClientSecretPath
-            )
-        }
+        try validateOAuthClientSecretPaths(credentials)
 
         return MailGatewayConfig(
             configPath: selectedConfigPath,
@@ -119,6 +134,101 @@ public enum MailGatewayConfigLoader {
             "accountIds": config.accounts.map(\.id),
             "credentialIds": config.credentials.map(\.id)
         ]
+    }
+
+    private static func defaultConfig(
+        configPath: String,
+        environment: [String: String]
+    ) throws -> MailGatewayConfig {
+        let storage = StorageConfig(
+            cacheDir: defaultDataDirectory(environment: environment),
+            attachmentDir: normalizedPath(URL(fileURLWithPath: defaultCacheDirectory(environment: environment))
+                .appendingPathComponent("attachments", isDirectory: true)
+                .path),
+            allowedSendAttachmentRoots: [
+                normalizedPath(URL(fileURLWithPath: defaultDataDirectory(environment: environment))
+                    .appendingPathComponent("send-attachments", isDirectory: true)
+                    .path)
+            ]
+        )
+        let credential = CredentialConfig(
+            id: defaultCredentialId,
+            provider: .gmail,
+            accessMode: .read,
+            oauthClientSecretPath: try resolveCredentialPath(CredentialPathRequest(
+                configPath: configPath,
+                credentialId: defaultCredentialId,
+                pathKey: "oauth_client_secret_path",
+                configValue: "google-client.json",
+                environment: environment,
+                context: "credentials.\(defaultCredentialId).oauth_client_secret_path"
+            )),
+            oauthClientSecretJSON: credentialJSONEnvValue(
+                credentialId: defaultCredentialId,
+                valueKey: "oauth_client_secret_json",
+                environment: environment
+            ),
+            tokenStorePath: try resolveCredentialPath(CredentialPathRequest(
+                configPath: configPath,
+                credentialId: defaultCredentialId,
+                pathKey: "token_store_path",
+                configValue: "tokens/\(defaultCredentialId).json",
+                environment: environment,
+                context: "credentials.\(defaultCredentialId).token_store_path"
+            )),
+            tokenStoreJSON: credentialJSONEnvValue(
+                credentialId: defaultCredentialId,
+                valueKey: "token_store_json",
+                environment: environment
+            )
+        )
+        return MailGatewayConfig(
+            configPath: configPath,
+            storage: storage,
+            credentials: [credential],
+            accounts: [
+                AccountConfig(
+                    id: defaultAccountId,
+                    provider: .gmail,
+                    emailAddress: "\(defaultAccountId)@example.invalid",
+                    credentialId: credential.id,
+                    defaultLabelIds: ["INBOX"]
+                )
+            ]
+        )
+    }
+
+    private static func defaultDataDirectory(environment: [String: String]) -> String {
+        if let xdgDataHome = nonBlank(environment["XDG_DATA_HOME"]) {
+            return normalizedPath(URL(fileURLWithPath: xdgDataHome)
+                .appendingPathComponent("mail-gateway", isDirectory: true)
+                .path)
+        }
+        return normalizedPath(FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local", isDirectory: true)
+            .appendingPathComponent("share", isDirectory: true)
+            .appendingPathComponent("mail-gateway", isDirectory: true)
+            .path)
+    }
+
+    private static func defaultCacheDirectory(environment: [String: String]) -> String {
+        if let xdgCacheHome = nonBlank(environment["XDG_CACHE_HOME"]) {
+            return normalizedPath(URL(fileURLWithPath: xdgCacheHome)
+                .appendingPathComponent("mail-gateway", isDirectory: true)
+                .path)
+        }
+        return normalizedPath(FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache", isDirectory: true)
+            .appendingPathComponent("mail-gateway", isDirectory: true)
+            .path)
+    }
+
+    private static func credentialJSONEnvValue(
+        credentialId: String,
+        valueKey: String,
+        environment: [String: String]
+    ) -> String? {
+        nonBlank(environment[getCredentialJSONEnvVarName(credentialId: credentialId, valueKey: valueKey)])
     }
 }
 
@@ -257,6 +367,18 @@ private func parseCredentialConfig(
 ) throws -> CredentialConfig {
     let contextBase = "credentials[\(index)]"
     let credentialId = try readString(record["id"], "\(contextBase).id")
+    let oauthClientSecretJSON = nonBlank(environment[
+        MailGatewayConfigLoader.getCredentialJSONEnvVarName(
+            credentialId: credentialId,
+            valueKey: "oauth_client_secret_json"
+        )
+    ])
+    let tokenStoreJSON = nonBlank(environment[
+        MailGatewayConfigLoader.getCredentialJSONEnvVarName(
+            credentialId: credentialId,
+            valueKey: "token_store_json"
+        )
+    ])
     return CredentialConfig(
         id: credentialId,
         provider: try readProvider(record["provider"], "\(contextBase).provider"),
@@ -272,6 +394,7 @@ private func parseCredentialConfig(
             environment: environment,
             context: "\(contextBase).oauth_client_secret_path"
         )),
+        oauthClientSecretJSON: oauthClientSecretJSON,
         tokenStorePath: try resolveCredentialPath(CredentialPathRequest(
             configPath: configPath,
             credentialId: credentialId,
@@ -279,7 +402,8 @@ private func parseCredentialConfig(
             configValue: readOptionalString(record["token_store_path"], "\(contextBase).token_store_path"),
             environment: environment,
             context: "\(contextBase).token_store_path"
-        ))
+        )),
+        tokenStoreJSON: tokenStoreJSON
     )
 }
 
@@ -316,6 +440,17 @@ private func resolveConfigRelativePath(configPath: String, rawPath: String) thro
     }
     let configDirectory = URL(fileURLWithPath: configPath).deletingLastPathComponent()
     return normalizedPath(configDirectory.appendingPathComponent(rawPath).path)
+}
+
+private func validateOAuthClientSecretPaths(_ credentials: [CredentialConfig]) throws {
+    for credential in credentials
+        where credential.oauthClientSecretJSON == nil &&
+        !FileManager.default.isReadableFile(atPath: credential.oauthClientSecretPath) {
+        throw configError(
+            "credentials.\(credential.id).oauth_client_secret_path is not readable: " +
+                credential.oauthClientSecretPath
+        )
+    }
 }
 
 private func readProvider(_ value: Any?, _ context: String) throws -> MailProvider {

@@ -1,8 +1,8 @@
 {
-  "lastUpdated": "2026-06-20T00:45:00+09:00",
+  "lastUpdated": "2026-06-23T12:45:00+09:00",
   "phases": {
     "1": { "status": "COMPLETED" },
-    "2": { "status": "BLOCKED" },
+    "2": { "status": "IN_PROGRESS" },
     "3": { "status": "BLOCKED" },
     "4": { "status": "BLOCKED" }
   },
@@ -37,6 +37,39 @@
           "status": "Completed",
           "parallelizable": false,
           "deps": []
+        }
+      }
+    },
+    "gmail-oauth-bootstrap": {
+      "phase": 2,
+      "status": "In Progress",
+      "tasks": {
+        "TASK-001": {
+          "status": "Implemented",
+          "parallelizable": false,
+          "deps": []
+        }
+      }
+    },
+    "default-config-fallback": {
+      "phase": 2,
+      "status": "Completed",
+      "tasks": {
+        "TASK-001": {
+          "status": "Completed",
+          "parallelizable": false,
+          "deps": []
+        }
+      }
+    },
+    "gmail-live-read": {
+      "phase": 2,
+      "status": "Blocked on credentials",
+      "tasks": {
+        "TASK-001": {
+          "status": "Implemented",
+          "parallelizable": false,
+          "deps": ["gmail-oauth-bootstrap:TASK-001"]
         }
       }
     }

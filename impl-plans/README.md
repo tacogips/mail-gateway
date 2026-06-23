@@ -79,13 +79,15 @@ Large features are split into multiple related plans with cross-references.
 
 | Plan | Status | Design Reference | Last Updated |
 |------|--------|------------------|--------------|
-| (No active plans) | - | - | - |
+| gmail-live-read | Blocked on credentials | design-docs/specs/design-mail-gateway.md#gmail-v1-adapter | 2026-06-23 |
+| gmail-oauth-bootstrap | In Progress | design-docs/specs/design-gmail-credentials.md#required-google-side-credentials | 2026-06-23 |
 
 ## Completed Plans
 
 | Plan | Completed | Design Reference |
 |------|-----------|------------------|
 | credential-path-env-overrides | 2026-03-15 | design-docs/specs/design-mail-gateway.md#Configuration Model |
+| default-config-fallback | 2026-06-23 | design-docs/specs/design-mail-gateway.md#configuration-design |
 | graphql-yoga-migration | 2026-03-16 | design-docs/specs/design-mail-gateway.md#GraphQL Design |
 | message-file-materialization | 2026-06-20 | design-docs/specs/design-mail-gateway.md#attachment-handling |
 
@@ -99,7 +101,7 @@ Only plans from eligible phases should be read to minimize context loading.
 | Phase | Status | Depends On |
 |-------|--------|------------|
 | 1 | COMPLETED | - |
-| 2 | BLOCKED | Phase 1 |
+| 2 | IN_PROGRESS | Phase 1 |
 | 3 | BLOCKED | Phase 2 |
 | 4 | BLOCKED | Phase 3 |
 
@@ -111,7 +113,8 @@ PHASE_TO_PLANS = {
     # Add Phase 1 plan files here
   ],
   2: [
-    # Add Phase 2 plan files here
+    "active/gmail-live-read.md",
+    "active/gmail-oauth-bootstrap.md"
   ],
   3: [
     # Add Phase 3 plan files here

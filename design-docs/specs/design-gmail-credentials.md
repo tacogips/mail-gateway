@@ -56,6 +56,7 @@ The downloaded JSON file from Google Cloud is the file referenced by:
 
 - `credentials[].oauth_client_secret_path`
 - `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_OAUTH_CLIENT_SECRET_PATH`
+- `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_OAUTH_CLIENT_SECRET_JSON`
 
 Despite the field name used by this repository, the file is the OAuth client JSON downloaded from Google Cloud for the Desktop app client.
 
@@ -80,6 +81,7 @@ After the user authorizes the app, the gateway stores token material in a local 
 
 - `credentials[].token_store_path`
 - `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_TOKEN_STORE_PATH`
+- `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_TOKEN_STORE_JSON`
 
 This file is not created in Google Cloud. It is created locally by the application after login and typically contains:
 
@@ -150,8 +152,8 @@ Example:
 id = "gmail-personal"
 provider = "gmail"
 access_mode = "read"
-oauth_client_secret_path = "/home/taco/.config/mail-gateway/google-client.json"
-token_store_path = "/home/taco/.config/mail-gateway/tokens/personal.json"
+oauth_client_secret_path = "~/.config/mail-gateway/google-client.json"
+token_store_path = "~/.config/mail-gateway/tokens/personal.json"
 ```
 
 Interpretation:
@@ -160,7 +162,7 @@ Interpretation:
 - `access_mode` controls which Gmail scopes the app should request
 - `oauth_client_secret_path` points to the downloaded Desktop app OAuth client JSON when present in TOML
 - `token_store_path` points to the locally generated token store when present in TOML
-- `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_...` env vars may supply the same paths without putting them in `config.toml`
+- `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_...` env vars may supply the same paths or JSON values without putting them in `config.toml`
 - if both TOML and env are set, the environment variable wins
 
 ## Setup Checklist
@@ -173,12 +175,12 @@ Interpretation:
 6. Put the local JSON path into `credentials[].oauth_client_secret_path` or `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_OAUTH_CLIENT_SECRET_PATH`
 7. Choose `access_mode = "read"` or `access_mode = "read_send"`
 8. Set `credentials[].token_store_path` or `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_TOKEN_STORE_PATH` to a local writable path
-9. Run `mail-gateway-reader auth login --credential <id>` once implemented
+9. Run `mail-gateway-reader auth login --credential <id>`
 10. Verify the result with `mail-gateway-reader auth status --credential <id>`
 
 ## Notes
 
-- The current implementation does not yet complete real Gmail OAuth login; `auth login` is still a stub.
+- The current implementation completes installed-app Gmail OAuth login and validates the token with the Gmail profile API. Live message retrieval is still outside the implemented baseline.
 - The credential requirements in this document describe the intended production setup for the Gmail adapter.
 - The recommendation to use `gmail.readonly` plus `gmail.send` for `read_send` is an inference from the current repository design: read access remains necessary while send support is limited to new outbound messages.
 - Attachment transport remains file-path based; this document does not require any Gmail-side credential for inline attachment payloads because that feature is intentionally out of scope.

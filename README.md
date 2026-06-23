@@ -33,15 +33,18 @@ mail-gateway-reader file download --config ./config.toml --key <key-1> --key <ke
 ```
 
 The Swift migration preserves the current local baseline: config validation,
-credential path environment overrides, token-store status/revoke inspection,
+credential path environment overrides, Gmail OAuth login/profile validation,
+token-store status/revoke inspection,
 attachment-cache lookup, cache pruning, and a read-only GraphQL-shaped JSON
 envelope over accounts, threads, thread, message, attachment, and message file
 metadata queries. File payloads are not returned through GraphQL. GraphQL file
 metadata uses vendor-neutral `downloadKey` values; callers download a concrete
 file only through `mail-gateway-reader file download`. Repeating `--key`
 downloads multiple files in one command and returns a `files` array; single-key
-downloads keep returning the existing single-file JSON object. Live Gmail API
-retrieval and send workflows remain outside the current implemented baseline.
+downloads keep returning the existing single-file JSON object. Live Gmail
+metadata retrieval is available for thread/message GraphQL queries when a
+valid Gmail OAuth token store is configured; send workflows remain outside
+the current implemented baseline.
 
 ### File Downloads
 
@@ -97,13 +100,46 @@ Configuration defaults to `$XDG_CONFIG_HOME/mail-gateway/config.toml`, or
 `~/.config/mail-gateway/config.toml` when `XDG_CONFIG_HOME` is not set. It can be
 overridden with `--config` or `MAIL_GATEWAY_CONFIG`.
 
+If the implicit default config file does not exist, the reader uses built-in
+local defaults so status and read-only local commands can still start:
+
+- storage cache: `$XDG_DATA_HOME/mail-gateway`, or `~/.local/share/mail-gateway`
+- attachment cache: `$XDG_CACHE_HOME/mail-gateway/attachments`, or
+  `~/.cache/mail-gateway/attachments`
+- send attachment root: `$XDG_DATA_HOME/mail-gateway/send-attachments`, or
+  `~/.local/share/mail-gateway/send-attachments`
+- credential id: `gmail-personal`
+- account id: `personal`
+- OAuth client JSON: `google-client.json` next to the default config path
+- token store: `tokens/gmail-personal.json` next to the default config path
+
+Explicit `--config` and `MAIL_GATEWAY_CONFIG` paths remain strict: if the named
+file is missing or unreadable, loading fails.
+
 Credential path overrides are supported per credential id:
 
 - `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_OAUTH_CLIENT_SECRET_PATH`
 - `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_TOKEN_STORE_PATH`
+- `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_OAUTH_CLIENT_SECRET_JSON`
+- `MAIL_GATEWAY_CREDENTIAL_<CREDENTIAL_ID>_TOKEN_STORE_JSON`
 
 `<CREDENTIAL_ID>` is derived from `credentials[].id` by uppercasing it and
 replacing non-alphanumeric characters with `_`.
+
+With the default credential id, kinko can provide these values through `.envrc`:
+
+```bash
+kinko set-key MAIL_GATEWAY_CREDENTIAL_GMAIL_PERSONAL_OAUTH_CLIENT_SECRET_PATH --value "$HOME/.config/mail-gateway/google-client.json"
+kinko set-key MAIL_GATEWAY_CREDENTIAL_GMAIL_PERSONAL_TOKEN_STORE_PATH --value "$HOME/.config/mail-gateway/tokens/gmail-personal.json"
+```
+
+If the credential material should stay entirely in kinko instead of local files,
+store the JSON values in:
+
+```bash
+MAIL_GATEWAY_CREDENTIAL_GMAIL_PERSONAL_OAUTH_CLIENT_SECRET_JSON
+MAIL_GATEWAY_CREDENTIAL_GMAIL_PERSONAL_TOKEN_STORE_JSON
+```
 
 ## Verification
 

@@ -9,10 +9,19 @@ struct TokenInspectionResult {
 }
 
 func inspectTokenStore(credential: CredentialConfig) -> TokenInspectionResult {
-    guard FileManager.default.isReadableFile(atPath: credential.tokenStorePath) else {
+    let exists: Bool
+    let data: Data?
+    if let tokenStoreJSON = credential.tokenStoreJSON {
+        exists = true
+        data = Data(tokenStoreJSON.utf8)
+    } else if FileManager.default.isReadableFile(atPath: credential.tokenStorePath) {
+        exists = true
+        data = FileManager.default.contents(atPath: credential.tokenStorePath)
+    } else {
         return missingTokenResult()
     }
-    guard let data = FileManager.default.contents(atPath: credential.tokenStorePath),
+
+    guard let data,
           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         return invalidTokenResult()
     }
@@ -41,7 +50,7 @@ func inspectTokenStore(credential: CredentialConfig) -> TokenInspectionResult {
 
     return TokenInspectionResult(
         state: accessMode == nil ? .unknown : .ready,
-        exists: true,
+        exists: exists,
         grantedAccessMode: accessMode,
         expiresAt: expiresAt,
         hasRefreshToken: hasRefreshToken

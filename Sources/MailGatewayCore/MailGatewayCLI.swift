@@ -169,7 +169,7 @@ public struct MailGatewayCLI {
         case "revoke":
             return success(try service.revokeAuth(credentialId: credentialId), pretty: pretty)
         case "login":
-            try service.login(credentialId: credentialId)
+            return success(try service.login(credentialId: credentialId), pretty: pretty)
         default:
             throw MailGatewayError(
                 "auth requires one of: login, revoke, status",

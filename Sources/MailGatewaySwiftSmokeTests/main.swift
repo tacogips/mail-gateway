@@ -15,10 +15,15 @@ func runSmokeTests() throws {
     try testCredentialEnvOverride(cleanup: &cleanup)
     try testPrettyConfigValidation(cleanup: &cleanup)
     try testEnvOnlyConfigValidation(cleanup: &cleanup)
+    try testMissingDefaultConfigUsesFallback(cleanup: &cleanup)
+    try testExplicitMissingConfigStillFails(cleanup: &cleanup)
     try testMissingAuthStatus(cleanup: &cleanup)
+    try testReadyAuthStatus(cleanup: &cleanup)
     try testScopeMismatchAuthStatus(cleanup: &cleanup)
     try testRevokeMissingToken(cleanup: &cleanup)
+    try testInvalidAuthLoginClientSecret(cleanup: &cleanup)
     try testAccountsGraphQL(cleanup: &cleanup)
+    try testMissingDefaultAuthThreadsGraphQLError(cleanup: &cleanup)
     try testInvalidInlineVariables(cleanup: &cleanup)
     try testInvalidVariablesFile(cleanup: &cleanup)
     try testMissingQueryFile(cleanup: &cleanup)
@@ -115,6 +120,44 @@ func testEnvOnlyConfigValidation(cleanup: inout [String]) throws {
     try assert(result.stderr.isEmpty, "env-only CLI config validation should not write stderr")
 }
 
+func testMissingDefaultConfigUsesFallback(cleanup: inout [String]) throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("mail-gateway-default-\(UUID().uuidString)", isDirectory: true)
+    cleanup.append(root.path)
+    let env = [
+        "XDG_CONFIG_HOME": root.appendingPathComponent("config-home", isDirectory: true).path,
+        "XDG_DATA_HOME": root.appendingPathComponent("data-home", isDirectory: true).path,
+        "XDG_CACHE_HOME": root.appendingPathComponent("cache-home", isDirectory: true).path
+    ]
+
+    let validate = runCli(["config", "validate"], env: env)
+    try assert(validate.exitCode == 0, "missing default config should use fallback config")
+    let validationOutput = try decodeObject(validate.stdout)
+    try assert(validationOutput["accountIds"] as? [String] == ["personal"], "fallback account id should be personal")
+    try assert(
+        validationOutput["credentialIds"] as? [String] == ["gmail-personal"],
+        "fallback credential id should be gmail-personal"
+    )
+
+    let status = runCli(["auth", "status", "--credential", "gmail-personal"], env: env)
+    try assert(status.exitCode == 0, "fallback auth status should succeed")
+    let statusOutput = try decodeObject(status.stdout)
+    try assert(statusOutput["state"] as? String == "MISSING", "fallback token state should be missing")
+    try assert(statusOutput["tokenStoreExists"] as? Bool == false, "fallback token store should be absent")
+}
+
+func testExplicitMissingConfigStillFails(cleanup: inout [String]) throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("mail-gateway-explicit-\(UUID().uuidString)", isDirectory: true)
+    cleanup.append(root.path)
+    let missingConfig = root.appendingPathComponent("missing.toml").path
+    let result = runCli(["config", "validate", "--config", missingConfig])
+    try assert(result.exitCode == MailGatewayExitCode.configurationError.rawValue, "explicit missing config should fail")
+    let output = try decodeObject(result.stderr)
+    let error = output["error"] as? [String: Any]
+    try assert(error?["code"] as? String == MailGatewayErrorCode.configInvalid.rawValue, "missing explicit config is invalid")
+}
+
 func testMissingAuthStatus(cleanup: inout [String]) throws {
     let fixture = try trackedFixture(cleanup: &cleanup)
     let result = runCli(["auth", "status", "--config", fixture.configPath, "--credential", "gmail-personal"])
@@ -122,6 +165,29 @@ func testMissingAuthStatus(cleanup: inout [String]) throws {
     let output = try decodeObject(result.stdout)
     try assert(output["state"] as? String == "MISSING", "missing token state should be reported")
     try assert(output["tokenStoreExists"] as? Bool == false, "missing token existence should be false")
+}
+
+func testReadyAuthStatus(cleanup: inout [String]) throws {
+    let fixture = try trackedFixture(cleanup: &cleanup)
+    try writeText(
+        fixture.tokenPath,
+        """
+        {
+          "accessMode": "read",
+          "accessToken": "access-token",
+          "refreshToken": "refresh-token",
+          "expiresAt": "2999-01-01T00:00:00Z",
+          "emailAddress": "person@example.com"
+        }
+        """
+    )
+    let result = runCli(["auth", "status", "--config", fixture.configPath, "--credential", "gmail-personal"])
+    try assert(result.exitCode == 0, "ready auth status should succeed")
+    let output = try decodeObject(result.stdout)
+    try assert(output["state"] as? String == "READY", "ready token state should be reported")
+    try assert(output["grantedAccessMode"] as? String == AccessMode.read.rawValue, "granted mode should be read")
+    try assert(output["hasRefreshToken"] as? Bool == true, "refresh token should be detected")
+    try assert(output["expiresAt"] as? String == "2999-01-01T00:00:00Z", "expiry should be reported")
 }
 
 func testScopeMismatchAuthStatus(cleanup: inout [String]) throws {
@@ -139,6 +205,15 @@ func testRevokeMissingToken(cleanup: inout [String]) throws {
     try assert(result.exitCode == 0, "revoke missing token should succeed")
     let output = try decodeObject(result.stdout)
     try assert(output["revoked"] as? Bool == false, "missing token revoke should be false")
+}
+
+func testInvalidAuthLoginClientSecret(cleanup: inout [String]) throws {
+    let fixture = try trackedFixture(cleanup: &cleanup)
+    let result = runCli(["auth", "login", "--config", fixture.configPath, "--credential", "gmail-personal"])
+    try assert(result.exitCode == MailGatewayExitCode.authenticationBootstrapError.rawValue, "invalid login should fail")
+    let output = try decodeObject(result.stderr)
+    let error = output["error"] as? [String: Any]
+    try assert(error?["code"] as? String == MailGatewayErrorCode.configInvalid.rawValue, "invalid client JSON should be config error")
 }
 
 func testAccountsGraphQL(cleanup: inout [String]) throws {
@@ -232,6 +307,27 @@ func testAttachmentLookup(cleanup: inout [String]) throws {
         containsEither(result.stdout, #""materializationState":"CACHED""#, #""materializationState" : "CACHED""#),
         "attachment state should be cached"
     )
+}
+
+func testMissingDefaultAuthThreadsGraphQLError(cleanup: inout [String]) throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("mail-gateway-no-auth-read-\(UUID().uuidString)", isDirectory: true)
+    cleanup.append(root.path)
+    let env = [
+        "XDG_CONFIG_HOME": root.appendingPathComponent("config-home", isDirectory: true).path,
+        "XDG_DATA_HOME": root.appendingPathComponent("data-home", isDirectory: true).path,
+        "XDG_CACHE_HOME": root.appendingPathComponent("cache-home", isDirectory: true).path
+    ]
+    let result = runCli([
+        "graphql",
+        "--query", #"{ threads(input: { accountId: "personal" }) { totalCount } }"#
+    ], env: env)
+    try assert(
+        result.exitCode == MailGatewayExitCode.graphqlExecutionError.rawValue,
+        "missing default auth threads query should fail with GraphQL exit"
+    )
+    try assert(result.stdout.contains("Authentication is required before reading Gmail"), "auth error should be explained")
+    try assert(result.stdout.contains("AUTH_REQUIRED"), "GraphQL error should include auth required code")
 }
 
 func testMissingAccountGraphQLError(cleanup: inout [String]) throws {

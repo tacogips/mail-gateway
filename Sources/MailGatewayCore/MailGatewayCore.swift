@@ -19,6 +19,7 @@ public enum MailGatewayErrorCode: String, Sendable {
     case credentialNotFound = "CREDENTIAL_NOT_FOUND"
     case invalidArgument = "INVALID_ARGUMENT"
     case messageNotFound = "MESSAGE_NOT_FOUND"
+    case providerApiError = "PROVIDER_API_ERROR"
     case providerRateLimited = "PROVIDER_RATE_LIMITED"
     case sendDisabledInReader = "SEND_DISABLED_IN_READER"
     case sendNotSupported = "SEND_NOT_SUPPORTED"
@@ -106,7 +107,9 @@ public struct CredentialConfig: Sendable {
     public let provider: MailProvider
     public let accessMode: AccessMode
     public let oauthClientSecretPath: String
+    public let oauthClientSecretJSON: String?
     public let tokenStorePath: String
+    public let tokenStoreJSON: String?
 }
 
 public struct AccountConfig: Sendable {
@@ -157,26 +160,21 @@ public struct MailGatewayReaderService {
     }
 
     public func searchThreads(accountId: String) throws -> [String: Any] {
-        _ = try requireAccount(accountId)
-        let pageInfo: [String: Any] = [
-            "hasNextPage": false,
-            "endCursor": NSNull()
-        ]
-        return [
-            "edges": [[String: Any]](),
-            "pageInfo": pageInfo,
-            "totalCount": 0
-        ]
+        let account = try requireAccount(accountId)
+        let credential = try requireCredential(account.credentialId)
+        return try GmailLiveReader().searchThreads(account: account, credential: credential)
     }
 
-    public func getThread(accountId: String, threadId _: String) throws -> Any {
-        _ = try requireAccount(accountId)
-        return NSNull()
+    public func getThread(accountId: String, threadId: String) throws -> Any {
+        let account = try requireAccount(accountId)
+        let credential = try requireCredential(account.credentialId)
+        return try GmailLiveReader().getThread(account: account, credential: credential, threadId: threadId)
     }
 
-    public func getMessage(accountId: String, messageId _: String) throws -> Any {
-        _ = try requireAccount(accountId)
-        return NSNull()
+    public func getMessage(accountId: String, messageId: String) throws -> Any {
+        let account = try requireAccount(accountId)
+        let credential = try requireCredential(account.credentialId)
+        return try GmailLiveReader().getMessage(account: account, credential: credential, messageId: messageId)
     }
 
     public func getAttachment(accountId: String, messageId: String, attachmentId: String) throws -> Any {
@@ -237,14 +235,9 @@ public struct MailGatewayReaderService {
         return ["credentialId": credentialId, "revoked": existed]
     }
 
-    public func login(credentialId: String) throws -> Never {
+    public func login(credentialId: String) throws -> [String: Any] {
         let credential = try requireCredential(credentialId)
-        throw MailGatewayError(
-            "Interactive auth bootstrap is not implemented for provider \(credential.provider.rawValue)",
-            code: .authBootstrapNotImplemented,
-            exitCode: .authenticationBootstrapError,
-            details: ["credentialId": credential.id]
-        )
+        return try GmailOAuthBootstrapper().login(credential: credential)
     }
 
     public func pruneCache(accountId: String?, all: Bool) throws -> [String: Any] {
