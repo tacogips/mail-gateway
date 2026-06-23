@@ -28,6 +28,7 @@ func runSmokeTests() throws {
     try testInvalidVariablesFile(cleanup: &cleanup)
     try testMissingQueryFile(cleanup: &cleanup)
     try testAttachmentLookup(cleanup: &cleanup)
+    try testMissingAttachmentLookup(cleanup: &cleanup)
     try testMessageFileDownload(cleanup: &cleanup)
     try testMissingAccountGraphQLError(cleanup: &cleanup)
     try testAccountCachePrune(cleanup: &cleanup)
@@ -307,6 +308,108 @@ func testAttachmentLookup(cleanup: inout [String]) throws {
         containsEither(result.stdout, #""materializationState":"CACHED""#, #""materializationState" : "CACHED""#),
         "attachment state should be cached"
     )
+
+    let stringLiteralFieldNamePath = URL(fileURLWithPath: messageDir)
+        .appendingPathComponent("mimeType-report.pdf")
+        .path
+    try writeText(stringLiteralFieldNamePath, "payload")
+    let projectedResult = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", """
+        { attachment(accountId: "personal", messageId: "message-1", attachmentId: "mimeType") { id } }
+        """
+    ])
+    try assert(projectedResult.exitCode == 0, "attachment projection query should succeed")
+    let projectedOutput = try decodeObject(projectedResult.stdout)
+    let projectedData = projectedOutput["data"] as? [String: Any]
+    let projectedAttachment = projectedData?["attachment"] as? [String: Any]
+    try assert(projectedAttachment?["id"] as? String == "mimeType", "attachment id should project")
+    try assert(projectedAttachment?["mimeType"] == nil, "field names in string literals should not project fields")
+    try assert(projectedAttachment?["localPath"] == nil, "unrequested attachment localPath should not project")
+    try assert(
+        projectedAttachment?["materializationState"] == nil,
+        "unrequested attachment materializationState should not project"
+    )
+
+    let stringLiteralArgumentNamePath = URL(fileURLWithPath: messageDir)
+        .appendingPathComponent("accountId:-report.pdf")
+        .path
+    try writeText(stringLiteralArgumentNamePath, "payload")
+    let reorderedResult = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", """
+        { attachment(attachmentId: "accountId:", accountId: "personal", messageId: "message-1") { id filename } }
+        """
+    ])
+    try assert(reorderedResult.exitCode == 0, "argument-like string literal should not affect parsing")
+    let reorderedOutput = try decodeObject(reorderedResult.stdout)
+    let reorderedData = reorderedOutput["data"] as? [String: Any]
+    let reorderedAttachment = reorderedData?["attachment"] as? [String: Any]
+    try assert(reorderedAttachment?["id"] as? String == "accountId:", "attachment id should allow argument-like text")
+    try assert(reorderedAttachment?["filename"] as? String == "report.pdf", "attachment filename should parse")
+
+    let spacedArgumentResult = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", """
+        { attachment(accountId : "personal", messageId : "message-1", attachmentId : "attachment-1") \
+        { id filename } }
+        """
+    ])
+    try assert(spacedArgumentResult.exitCode == 0, "spaced GraphQL argument labels should parse")
+    let spacedArgumentOutput = try decodeObject(spacedArgumentResult.stdout)
+    let spacedArgumentData = spacedArgumentOutput["data"] as? [String: Any]
+    let spacedArgumentAttachment = spacedArgumentData?["attachment"] as? [String: Any]
+    try assert(
+        spacedArgumentAttachment?["filename"] as? String == "report.pdf",
+        "spaced argument labels should preserve attachment lookup"
+    )
+
+    let nestedSelectionResult = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", """
+        { attachment(accountId: "personal", messageId: "message-1", attachmentId: "attachment-1") \
+        { id providerMetadata { mimeType } } }
+        """
+    ])
+    try assert(nestedSelectionResult.exitCode == 0, "nested selection names should not project top-level fields")
+    let nestedSelectionOutput = try decodeObject(nestedSelectionResult.stdout)
+    let nestedSelectionData = nestedSelectionOutput["data"] as? [String: Any]
+    let nestedSelectionAttachment = nestedSelectionData?["attachment"] as? [String: Any]
+    try assert(nestedSelectionAttachment?["id"] as? String == "attachment-1", "direct id should project")
+    try assert(
+        nestedSelectionAttachment?["mimeType"] == nil,
+        "nested selection field names should not project top-level attachment fields"
+    )
+
+    let aliasedSelectionResult = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", """
+        { attachment(accountId: "personal", messageId: "message-1", attachmentId: "attachment-1") \
+        { id accountId: filename } }
+        """
+    ])
+    try assert(aliasedSelectionResult.exitCode == 0, "selection aliases should not be parsed as arguments")
+}
+
+func testMissingAttachmentLookup(cleanup: inout [String]) throws {
+    let fixture = try trackedFixture(cleanup: &cleanup)
+    let result = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", """
+        { attachment(accountId: "personal", messageId: "message-1", attachmentId: "missing") \
+        { id filename localPath materializationState } }
+        """
+    ])
+    try assert(result.exitCode == 0, "missing cached attachment query should succeed without live auth")
+    let output = try decodeObject(result.stdout)
+    let data = output["data"] as? [String: Any]
+    try assert(data?["attachment"] is NSNull, "missing cached attachment should return null")
 }
 
 func testMissingDefaultAuthThreadsGraphQLError(cleanup: inout [String]) throws {

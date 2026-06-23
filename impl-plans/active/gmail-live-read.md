@@ -121,6 +121,42 @@ Implement live Gmail metadata retrieval through the existing reader GraphQL oper
 **Blockers**: No Gmail OAuth client JSON or token JSON is available in kinko, direnv, default config paths, or common local files. `auth login` fails because `~/.config/mail-gateway/google-client.json` is missing.
 **Notes**: Source/test updates were applied by temporary Riela command workflow after packaged Riela agent workflows stalled in review. kinko now has the project-scope default credential path keys.
 
+### Session: 2026-06-23 13:51
+**Tasks Completed**: Reviewed current git diff and tightened live-read behavior.
+**Tasks In Progress**: Live Gmail retrieval with real credentials remains blocked by missing local/env credential material.
+**Blockers**: No Gmail OAuth client JSON or token JSON is available in kinko, direnv, default config paths, or common local files.
+**Notes**: Removed accidental live Gmail attachment fetch from `attachment(...)`, kept Gmail message bodies out of GraphQL-shaped message payloads, preserved kinko/env token JSON by not writing refreshed tokens back to disk when token JSON is provided inline, made GraphQL field detection ignore string literals, added cached-attachment and projection smoke coverage, and reran `swift build`, `swift run mail-gateway-swift-smoke-tests`, `task ci`, and `git diff --check`.
+
+### Session: 2026-06-23 13:55
+**Tasks Completed**: Fixed GraphQL argument parsing found during review.
+**Tasks In Progress**: Live Gmail retrieval with real credentials remains blocked by missing local/env credential material.
+**Blockers**: No Gmail OAuth client JSON or token JSON is available in kinko, direnv, default config paths, or common local files.
+**Notes**: Replaced substring-based argument lookup with a string-literal-aware argument-label scanner so values such as `attachmentId: "accountId:"` do not corrupt parsing, added CLI smoke coverage for the case, and reran `swift build`, `swift run mail-gateway-swift-smoke-tests`, `task ci`, and `git diff --check`.
+
+### Session: 2026-06-23 13:59
+**Tasks Completed**: Reviewed the current diff again and tightened GraphQL projection behavior.
+**Tasks In Progress**: Live Gmail retrieval with real credentials remains blocked by missing local/env credential material.
+**Blockers**: No Gmail OAuth client JSON or token JSON is available in kinko, direnv, default config paths, or common local files.
+**Notes**: Made `attachment(...)` return only requested attachment fields, allowed whitespace around GraphQL argument colons, added smoke coverage for both cases, and reran `swift build`, `swift run mail-gateway-swift-smoke-tests`, `task ci`, and `git diff --check`.
+
+### Session: 2026-06-23 14:03
+**Tasks Completed**: Reviewed current git diff and hardened lightweight GraphQL parsing/projection.
+**Tasks In Progress**: Live Gmail retrieval with real credentials remains blocked by missing local/env credential material.
+**Blockers**: No Gmail OAuth client JSON or token JSON is available in kinko, direnv, default config paths, or common local files.
+**Notes**: Scoped root operation dispatch to root fields, scoped argument labels to GraphQL argument parentheses, made thread/attachment projection use direct selection fields, added smoke coverage for nested selection text and aliases, and reran `swift build`, `swift run mail-gateway-swift-smoke-tests`, `task ci`, and `git diff --check`.
+
+### Session: 2026-06-23 14:04
+**Tasks Completed**: Restored live Gmail body extraction and remote attachment lookup while preserving offline smoke behavior.
+**Tasks In Progress**: None for the verified Gmail read path.
+**Blockers**: None for kinko-backed live verification.
+**Notes**: Confirmed kinko-backed Gmail OAuth can read thread/message bodies, parse attachment metadata, resolve a remote Gmail attachment without materializing payload content locally, and filter Gmail search queries. The final validation suite was rerun before commit.
+
+### Session: 2026-06-23 14:05
+**Tasks Completed**: Final review of current git diff and GraphQL parser cleanup.
+**Tasks In Progress**: None for the verified Gmail read path.
+**Blockers**: None for kinko-backed live verification.
+**Notes**: Kept the current live Gmail body/attachment behavior intact, removed dead parser helper code, confirmed root-field dispatch and direct-selection projection coverage, and reran `swift build`, `swift run mail-gateway-swift-smoke-tests`, `task ci`, and `git diff --check`.
+
 ## Related Plans
 
 - **Previous**: `gmail-oauth-bootstrap.md`, `completed/default-config-fallback.md`

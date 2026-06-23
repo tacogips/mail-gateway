@@ -159,10 +159,21 @@ public struct MailGatewayReaderService {
         return buildMailAccount(account, graphQL: true)
     }
 
-    public func searchThreads(accountId: String) throws -> [String: Any] {
+    public func searchThreads(
+        accountId: String,
+        query: String? = nil,
+        includeEdges: Bool = true,
+        includeNodeDetails: Bool = true
+    ) throws -> [String: Any] {
         let account = try requireAccount(accountId)
         let credential = try requireCredential(account.credentialId)
-        return try GmailLiveReader().searchThreads(account: account, credential: credential)
+        return try GmailLiveReader().searchThreads(
+            account: account,
+            credential: credential,
+            query: query,
+            includeEdges: includeEdges,
+            includeNodeDetails: includeNodeDetails
+        )
     }
 
     public func getThread(accountId: String, threadId: String) throws -> Any {
@@ -178,27 +189,36 @@ public struct MailGatewayReaderService {
     }
 
     public func getAttachment(accountId: String, messageId: String, attachmentId: String) throws -> Any {
-        _ = try requireAccount(accountId)
+        let account = try requireAccount(accountId)
         let attachmentDirectory = URL(fileURLWithPath: attachmentRoot)
             .appendingPathComponent(accountId, isDirectory: true)
             .appendingPathComponent(messageId, isDirectory: true)
             .path
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: attachmentDirectory)) ?? []
-        guard let matchingEntry = entries.first(where: { $0.hasPrefix("\(attachmentId)-") }) else {
+        if let matchingEntry = entries.first(where: { $0.hasPrefix("\(attachmentId)-") }) {
+            let localPath = normalizedPath(URL(fileURLWithPath: attachmentDirectory)
+                .appendingPathComponent(matchingEntry)
+                .path)
+            let filename = String(matchingEntry.dropFirst("\(attachmentId)-".count))
+            return [
+                "id": attachmentId,
+                "filename": filename.isEmpty ? NSNull() : filename as Any,
+                "mimeType": "application/octet-stream",
+                "sizeBytes": NSNull(),
+                "localPath": localPath,
+                "materializationState": AttachmentMaterializationState.cached.rawValue
+            ]
+        }
+        let credential = try requireCredential(account.credentialId)
+        guard canAttemptLiveGmailRead(credential: credential) else {
             return NSNull()
         }
-        let localPath = normalizedPath(URL(fileURLWithPath: attachmentDirectory)
-            .appendingPathComponent(matchingEntry)
-            .path)
-        let filename = String(matchingEntry.dropFirst("\(attachmentId)-".count))
-        return [
-            "id": attachmentId,
-            "filename": filename.isEmpty ? NSNull() : filename as Any,
-            "mimeType": "application/octet-stream",
-            "sizeBytes": NSNull(),
-            "localPath": localPath,
-            "materializationState": AttachmentMaterializationState.cached.rawValue
-        ]
+        return try GmailLiveReader().getAttachment(
+            account: account,
+            credential: credential,
+            messageId: messageId,
+            attachmentId: attachmentId
+        )
     }
 
     public func getAuthStatus(credentialId: String) throws -> [String: Any] {
@@ -331,6 +351,10 @@ public struct MailGatewayReaderService {
             )
         }
         return credential
+    }
+
+    private func canAttemptLiveGmailRead(credential: CredentialConfig) -> Bool {
+        credential.tokenStoreJSON != nil || FileManager.default.isReadableFile(atPath: credential.tokenStorePath)
     }
 
     func requireAccount(_ accountId: String) throws -> AccountConfig {

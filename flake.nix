@@ -34,6 +34,7 @@
           gnused
           gh
           go-task
+          google-cloud-sdk
         ];
 
       in
