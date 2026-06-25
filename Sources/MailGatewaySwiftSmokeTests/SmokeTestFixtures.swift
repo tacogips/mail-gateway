@@ -48,7 +48,8 @@ func writeText(_ path: String, _ text: String) throws {
 func createFixture(
     includeCredentialPaths: Bool = true,
     oauthClientSecretPathValue: String? = nil,
-    tokenStorePathValue: String? = nil
+    tokenStorePathValue: String? = nil,
+    accessMode: AccessMode = .read
 ) throws -> Fixture {
     let root = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("mail-gateway-\(UUID().uuidString)", isDirectory: true)
@@ -68,7 +69,8 @@ func createFixture(
         configPath: configPath,
         includeCredentialPaths: includeCredentialPaths,
         oauthClientSecretPathValue: oauthClientSecretPathValue,
-        tokenStorePathValue: tokenStorePathValue
+        tokenStorePathValue: tokenStorePathValue,
+        accessMode: accessMode
     )
 
     return Fixture(
@@ -108,7 +110,8 @@ func writeFixtureConfig(
     configPath: String,
     includeCredentialPaths: Bool,
     oauthClientSecretPathValue: String?,
-    tokenStorePathValue: String?
+    tokenStorePathValue: String?,
+    accessMode: AccessMode = .read
 ) throws {
     let credentialLines = includeCredentialPaths
         ? """
@@ -127,7 +130,7 @@ func writeFixtureConfig(
         [[credentials]]
         id = "gmail-personal"
         provider = "gmail"
-        access_mode = "read"
+        access_mode = "\(accessMode.rawValue)"
         \(credentialLines)
 
         [[accounts]]
@@ -150,6 +153,14 @@ func decodeObject(_ text: String) throws -> [String: Any] {
 
 func runCli(_ arguments: [String], env: [String: String] = [:]) -> MailGatewayCommandResult {
     MailGatewayCLI().run(arguments: arguments, environment: env)
+}
+
+func runCli(
+    _ arguments: [String],
+    mode: MailGatewayCLIMode,
+    env: [String: String] = [:]
+) -> MailGatewayCommandResult {
+    MailGatewayCLI(mode: mode).run(arguments: arguments, environment: env)
 }
 
 func credentialEnv(fixture: Fixture, oauthPath: String? = nil, tokenPath: String? = nil) -> [String: String] {
@@ -176,4 +187,40 @@ func trackedFixture(
 
 func containsEither(_ text: String, _ lhs: String, _ rhs: String) -> Bool {
     text.contains(lhs) || text.contains(rhs)
+}
+
+final class GmailRequestCaptureProtocol: URLProtocol {
+    static var capturedURLs: [URL] = []
+    static var responseBody = #"{"messages":[],"resultSizeEstimate":0}"#
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "gmail.googleapis.com"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        if let url = request.url {
+            Self.capturedURLs.append(url)
+        }
+        let data = Data(Self.responseBody.utf8)
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://gmail.googleapis.com/")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    static func reset() {
+        capturedURLs = []
+        responseBody = #"{"messages":[],"resultSizeEstimate":0}"#
+    }
 }

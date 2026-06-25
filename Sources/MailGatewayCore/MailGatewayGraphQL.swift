@@ -25,6 +25,13 @@ func executeReaderGraphQL(
 }
 
 private func executeReaderGraphQLData(service: MailGatewayReaderService, query: String) throws -> [String: Any] {
+    if rootFieldSource("sendMessage", in: query) != nil || rootFieldSource("createDraft", in: query) != nil {
+        throw MailGatewayError(
+            "Mail write mutations are disabled in mail-gateway-reader",
+            code: .sendDisabledInReader,
+            exitCode: .graphqlExecutionError
+        )
+    }
     if rootFieldSource("accounts", in: query) != nil {
         return ["accounts": service.graphQLAccounts()]
     }
@@ -41,6 +48,10 @@ private func executeReaderGraphQLData(service: MailGatewayReaderService, query: 
                 try service.searchThreads(
                     accountId: try extractStringArgument("accountId", from: source),
                     query: try extractOptionalStringArgument("query", from: source),
+                    direction: try extractOptionalThreadSearchDirectionArgument("direction", from: source),
+                    labelIds: try extractOptionalStringArrayArgument("labelIds", from: source),
+                    receivedAfter: try extractOptionalStringArgument("receivedAfter", from: source),
+                    receivedBefore: try extractOptionalStringArgument("receivedBefore", from: source),
                     includeEdges: directFieldExists("edges", in: selection),
                     includeNodeDetails: directFieldExists("node", in: edgeSelection)
                 ),
@@ -65,6 +76,72 @@ private func executeReaderGraphQLData(service: MailGatewayReaderService, query: 
         code: .invalidArgument,
         exitCode: .graphqlExecutionError
     )
+}
+
+public func executeWriteGraphQL(
+    config: MailGatewayConfig,
+    query: String,
+    mode: MailGatewayWriteMode
+) throws -> (body: [String: Any], exitCode: MailGatewayExitCode) {
+    let service = MailGatewayReaderService(config: config)
+    do {
+        if let source = rootFieldSource("createDraft", in: query) {
+            return (
+                [
+                    "data": [
+                        "createDraft": try MailGatewayWriteService(config: config).sendMessage(
+                            input: try outboundMailInput(from: source),
+                            mode: .draftDefault
+                        )
+                    ]
+                ],
+                .success
+            )
+        }
+        if let source = rootFieldSource("sendMessage", in: query) {
+            return (
+                [
+                    "data": [
+                        "sendMessage": try MailGatewayWriteService(config: config).sendMessage(
+                            input: try outboundMailInput(from: source),
+                            mode: mode
+                        )
+                    ]
+                ],
+                .success
+            )
+        }
+        return (["data": try executeWriteQueryData(service: service, query: query)], .success)
+    } catch let error as MailGatewayError where error.exitCode == .graphqlExecutionError {
+        let extensions: [String: Any] = [
+            "code": error.code.rawValue,
+            "exitCode": error.exitCode.rawValue
+        ]
+        let errors: [[String: Any]] = [[
+            "message": error.message,
+            "extensions": extensions
+        ]]
+        let body: [String: Any] = [
+            "data": NSNull(),
+            "errors": errors
+        ]
+        return (body, .graphqlExecutionError)
+    }
+}
+
+private func executeWriteQueryData(service: MailGatewayReaderService, query: String) throws -> [String: Any] {
+    if rootFieldSource("accounts", in: query) != nil {
+        return ["accounts": service.graphQLAccounts(sendEnabled: true)]
+    }
+    if let source = rootFieldSource("account", in: query) {
+        return [
+            "account": service.graphQLAccount(
+                id: try extractStringArgument("id", from: source),
+                sendEnabled: true
+            ) as Any? ?? NSNull()
+        ]
+    }
+    return try executeReaderGraphQLData(service: service, query: query)
 }
 
 private func projectThreadConnectionSelection(_ connection: [String: Any], selection: String) -> [String: Any] {
@@ -355,6 +432,139 @@ private func extractOptionalStringArgument(_ name: String, from query: String) t
     return try readGraphQLStringArgument(name: name, query: query, index: query.index(after: index))
 }
 
+private func extractOptionalBooleanArgument(_ name: String, from query: String) throws -> Bool? {
+    guard let range = rangeOfArgumentLabel(name, in: query) else {
+        return nil
+    }
+    let start = skipWhitespace(in: query, from: range.upperBound)
+    var end = start
+    while end < query.endIndex,
+          isGraphQLIdentifier(query[end]) {
+        end = query.index(after: end)
+    }
+    let value = String(query[start..<end])
+    if value == "true" {
+        return true
+    }
+    if value == "false" {
+        return false
+    }
+    throw MailGatewayError(
+        "GraphQL argument \(name) must be a boolean literal",
+        code: .invalidArgument,
+        exitCode: .graphqlExecutionError
+    )
+}
+
+private func extractOptionalThreadSearchDirectionArgument(
+    _ name: String,
+    from query: String
+) throws -> ThreadSearchDirection? {
+    guard let value = try extractOptionalStringOrEnumArgument(name, from: query) else {
+        return nil
+    }
+    switch value.uppercased() {
+    case ThreadSearchDirection.sent.rawValue:
+        return .sent
+    case ThreadSearchDirection.received.rawValue:
+        return .received
+    case ThreadSearchDirection.all.rawValue:
+        return .all
+    default:
+        throw MailGatewayError(
+            "GraphQL argument \(name) must be SENT, RECEIVED, or ALL",
+            code: .invalidArgument,
+            exitCode: .graphqlExecutionError
+        )
+    }
+}
+
+private func extractOptionalStringOrEnumArgument(_ name: String, from query: String) throws -> String? {
+    guard let range = rangeOfArgumentLabel(name, in: query) else {
+        return nil
+    }
+    var index = skipWhitespace(in: query, from: range.upperBound)
+    if index < query.endIndex,
+       query[index] == "\"" {
+        return try readGraphQLStringArgument(name: name, query: query, index: query.index(after: index))
+    }
+    let start = index
+    while index < query.endIndex,
+          isGraphQLIdentifier(query[index]) {
+        index = query.index(after: index)
+    }
+    guard start < index else {
+        throw MailGatewayError(
+            "GraphQL argument \(name) must be a string or enum literal",
+            code: .invalidArgument,
+            exitCode: .graphqlExecutionError
+        )
+    }
+    let value = String(query[start..<index])
+    if value == "null" {
+        return nil
+    }
+    return value
+}
+
+private func outboundMailInput(from query: String) throws -> OutboundMailInput {
+    OutboundMailInput(
+        accountId: try extractStringArgument("accountId", from: query),
+        to: try extractOptionalStringArrayArgument("to", from: query) ?? [],
+        cc: try extractOptionalStringArrayArgument("cc", from: query) ?? [],
+        bcc: try extractOptionalStringArrayArgument("bcc", from: query) ?? [],
+        replyTo: try extractOptionalStringArgument("replyTo", from: query),
+        subject: try extractOptionalStringArgument("subject", from: query),
+        textBody: try extractOptionalStringArgument("textBody", from: query),
+        htmlBody: try extractOptionalStringArgument("htmlBody", from: query),
+        attachmentPaths: try extractOptionalStringArrayArgument("attachmentPaths", from: query) ?? []
+    )
+}
+
+private func extractOptionalStringArrayArgument(_ name: String, from query: String) throws -> [String]? {
+    guard let range = rangeOfArgumentLabel(name, in: query) else {
+        return nil
+    }
+    var index = skipWhitespace(in: query, from: range.upperBound)
+    guard index < query.endIndex,
+          query[index] == "[" else {
+        throw MailGatewayError(
+            "GraphQL argument \(name) must be a string array literal",
+            code: .invalidArgument,
+            exitCode: .graphqlExecutionError
+        )
+    }
+    index = query.index(after: index)
+    var values: [String] = []
+    while index < query.endIndex {
+        index = skipWhitespace(in: query, from: index)
+        if index < query.endIndex,
+           query[index] == "]" {
+            return values
+        }
+        guard index < query.endIndex,
+              query[index] == "\"" else {
+            throw MailGatewayError(
+                "GraphQL argument \(name) must contain string literals",
+                code: .invalidArgument,
+                exitCode: .graphqlExecutionError
+            )
+        }
+        values.append(try readGraphQLStringArgument(name: name, query: query, index: query.index(after: index)))
+        index = indexAfterStringLiteral(in: query, from: query.index(after: index))
+        index = skipWhitespace(in: query, from: index)
+        if index < query.endIndex,
+           query[index] == "," {
+            index = query.index(after: index)
+        }
+    }
+    throw MailGatewayError(
+        "GraphQL argument \(name) array literal is unterminated",
+        code: .invalidArgument,
+        exitCode: .graphqlExecutionError
+    )
+}
+
 private func rangeOfArgumentLabel(_ name: String, in query: String) -> Range<String.Index>? {
     var index = query.startIndex
     var inString = false
@@ -416,7 +626,22 @@ private func readGraphQLStringArgument(name: String, query: String, index: Strin
     while index < query.endIndex {
         let character = query[index]
         if escaping {
-            value.append(character)
+            switch character {
+            case "n":
+                value.append("\n")
+            case "r":
+                value.append("\r")
+            case "t":
+                value.append("\t")
+            case "\"", "\\", "/":
+                value.append(character)
+            case "b":
+                value.append("\u{08}")
+            case "f":
+                value.append("\u{0c}")
+            default:
+                value.append(character)
+            }
             escaping = false
         } else if character == "\\" {
             escaping = true
@@ -432,4 +657,21 @@ private func readGraphQLStringArgument(name: String, query: String, index: Strin
         code: .invalidArgument,
         exitCode: .graphqlExecutionError
     )
+}
+
+private func indexAfterStringLiteral(in query: String, from startIndex: String.Index) -> String.Index {
+    var index = startIndex
+    var escaping = false
+    while index < query.endIndex {
+        let character = query[index]
+        if escaping {
+            escaping = false
+        } else if character == "\\" {
+            escaping = true
+        } else if character == "\"" {
+            return query.index(after: index)
+        }
+        index = query.index(after: index)
+    }
+    return query.endIndex
 }

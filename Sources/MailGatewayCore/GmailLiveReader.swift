@@ -5,11 +5,23 @@ struct GmailLiveReader {
         account: AccountConfig,
         credential: CredentialConfig,
         query: String?,
+        direction: ThreadSearchDirection?,
+        labelIds: [String]?,
+        receivedAfter: String?,
+        receivedBefore: String?,
         includeEdges: Bool,
         includeNodeDetails: Bool
     ) throws -> [String: Any] {
         let accessToken = try validAccessToken(credential: credential)
-        let listed = try listMessages(account: account, accessToken: accessToken, query: query)
+        let listed = try listMessages(
+            account: account,
+            accessToken: accessToken,
+            query: query,
+            direction: direction,
+            labelIds: labelIds,
+            receivedAfter: receivedAfter,
+            receivedBefore: receivedBefore
+        )
         let pageInfo: [String: Any] = [
             "hasNextPage": listed.nextPageToken != nil,
             "endCursor": listed.nextPageToken as Any? ?? NSNull()
@@ -308,15 +320,28 @@ private func writeRefreshedTokenStore(_ tokenStore: GmailOAuthTokenStore, to pat
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
 }
 
-private func listMessages(account: AccountConfig, accessToken: String, query: String?) throws -> GmailListedMessages {
+private func listMessages(
+    account: AccountConfig,
+    accessToken: String,
+    query: String?,
+    direction: ThreadSearchDirection?,
+    labelIds: [String]?,
+    receivedAfter: String?,
+    receivedBefore: String?
+) throws -> GmailListedMessages {
     var components = gmailURLComponents(path: "/gmail/v1/users/me/messages")
     var queryItems = [
         URLQueryItem(name: "maxResults", value: "10")
     ]
-    if let query = nonBlank(query) {
+    if let query = gmailMessageSearchQuery(
+        query: query,
+        direction: direction,
+        receivedAfter: receivedAfter,
+        receivedBefore: receivedBefore
+    ) {
         queryItems.append(URLQueryItem(name: "q", value: query))
     }
-    for labelId in account.defaultLabelIds {
+    for labelId in gmailSearchLabelIds(account: account, explicitLabelIds: labelIds, direction: direction) {
         queryItems.append(URLQueryItem(name: "labelIds", value: labelId))
     }
     components.queryItems = queryItems
@@ -337,6 +362,73 @@ private func listMessages(account: AccountConfig, accessToken: String, query: St
         nextPageToken: nonBlank(object["nextPageToken"] as? String),
         resultSizeEstimate: gmailInt(object["resultSizeEstimate"])
     )
+}
+
+private func gmailMessageSearchQuery(
+    query: String?,
+    direction: ThreadSearchDirection?,
+    receivedAfter: String?,
+    receivedBefore: String?
+) -> String? {
+    var terms: [String] = []
+    switch direction {
+    case .sent:
+        terms.append("in:sent")
+    case .received:
+        terms.append("-in:sent")
+    case .all, nil:
+        break
+    }
+    if let receivedAfter = gmailSearchDateTerm(prefix: "after", value: receivedAfter) {
+        terms.append(receivedAfter)
+    }
+    if let receivedBefore = gmailSearchDateTerm(prefix: "before", value: receivedBefore) {
+        terms.append(receivedBefore)
+    }
+    if let query = nonBlank(query) {
+        terms.append(query)
+    }
+    return nonBlank(terms.joined(separator: " "))
+}
+
+private func gmailSearchLabelIds(
+    account: AccountConfig,
+    explicitLabelIds: [String]?,
+    direction: ThreadSearchDirection?
+) -> [String] {
+    if let explicitLabelIds {
+        return explicitLabelIds.compactMap(nonBlank)
+    }
+    if direction == .sent {
+        return []
+    }
+    return account.defaultLabelIds
+}
+
+private func gmailSearchDateTerm(prefix: String, value: String?) -> String? {
+    guard let value = nonBlank(value) else {
+        return nil
+    }
+    let normalized = value.replacingOccurrences(of: "-", with: "/")
+    if normalized.count >= 10 {
+        let endIndex = normalized.index(normalized.startIndex, offsetBy: 10)
+        let date = String(normalized[..<endIndex])
+        if isGmailSearchDate(date) {
+            return "\(prefix):\(date)"
+        }
+    }
+    return "\(prefix):\(normalized)"
+}
+
+private func isGmailSearchDate(_ value: String) -> Bool {
+    let parts = value.split(separator: "/")
+    guard parts.count == 3,
+          parts[0].count == 4,
+          parts[1].count == 2,
+          parts[2].count == 2 else {
+        return false
+    }
+    return parts.allSatisfy { part in part.allSatisfy(\.isNumber) }
 }
 
 private func getMessageFull(messageId: String, account: AccountConfig, accessToken: String) throws -> [String: Any] {

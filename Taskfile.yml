@@ -21,6 +21,16 @@ tasks:
     cmds:
       - swift build -c release --product mail-gateway-reader
 
+  build-draft:
+    desc: Build the default draft gateway command product
+    cmds:
+      - swift build -c release --product mail-gateway-draft
+
+  build-sender:
+    desc: Build the explicit sender command product
+    cmds:
+      - swift build -c release --product mail-gateway-sender
+
   test:
     desc: Run Swift smoke tests
     cmds:
@@ -46,6 +56,19 @@ tasks:
       - mkdir -p "{{.INSTALL_PREFIX}}/bin"
       - install .build/release/mail-gateway-reader "{{.INSTALL_PREFIX}}/bin/mail-gateway-reader"
 
+  install:
+    desc: Install all Swift command products
+    vars:
+      INSTALL_PREFIX: '{{default "/usr/local" .PREFIX}}'
+    cmds:
+      - swift build -c release --product mail-gateway-reader
+      - swift build -c release --product mail-gateway-draft
+      - swift build -c release --product mail-gateway-sender
+      - mkdir -p "{{.INSTALL_PREFIX}}/bin"
+      - install .build/release/mail-gateway-reader "{{.INSTALL_PREFIX}}/bin/mail-gateway-reader"
+      - install .build/release/mail-gateway-draft "{{.INSTALL_PREFIX}}/bin/mail-gateway-draft"
+      - install .build/release/mail-gateway-sender "{{.INSTALL_PREFIX}}/bin/mail-gateway-sender"
+
   release:clean:
     desc: Clean release artifacts
     cmds:
@@ -64,6 +87,8 @@ tasks:
       - task: release:prepare
       - mkdir -p {{.RELEASE_DIR}}/bin
       - install .build/release/mail-gateway-reader {{.RELEASE_DIR}}/bin/mail-gateway-reader
+      - install .build/release/mail-gateway-draft {{.RELEASE_DIR}}/bin/mail-gateway-draft
+      - install .build/release/mail-gateway-sender {{.RELEASE_DIR}}/bin/mail-gateway-sender
       - cd release && tar -czf {{.PROJECT_NAME}}-{{.VERSION}}.tar.gz $(basename {{.RELEASE_DIR}})
       - echo "Built release/{{.PROJECT_NAME}}-{{.VERSION}}.tar.gz"
 

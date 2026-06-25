@@ -1,7 +1,28 @@
 import Foundation
 
+public enum MailGatewayCLIMode: Sendable {
+    case reader
+    case draftGateway
+    case directSender
+
+    var executableName: String {
+        switch self {
+        case .reader:
+            return "mail-gateway-reader"
+        case .draftGateway:
+            return "mail-gateway-draft"
+        case .directSender:
+            return "mail-gateway-sender"
+        }
+    }
+}
+
 public struct MailGatewayCLI {
-    public init() {}
+    private let mode: MailGatewayCLIMode
+
+    public init(mode: MailGatewayCLIMode = .reader) {
+        self.mode = mode
+    }
 
     public func run(
         arguments: [String],
@@ -48,7 +69,7 @@ public struct MailGatewayCLI {
         let topic = parsed.positionals.first == "help"
             ? parsed.positionals.dropFirst().first
             : parsed.positionals.first
-        let text = topic == "file" ? fileHelpText : rootHelpText
+        let text = topic == "file" ? fileHelpText(executableName: mode.executableName) : rootHelpText(mode: mode)
         return MailGatewayCommandResult(
             exitCode: MailGatewayExitCode.success.rawValue,
             stdout: text,
@@ -121,7 +142,15 @@ public struct MailGatewayCLI {
         let config = try MailGatewayConfigLoader.loadConfig(configPath: configPath, environment: environment)
         let query = try loadQuery(flags: flags)
         _ = try loadVariables(flags: flags)
-        let result = try executeReaderGraphQL(config: config, query: query)
+        let result: (body: [String: Any], exitCode: MailGatewayExitCode)
+        switch mode {
+        case .reader:
+            result = try executeReaderGraphQL(config: config, query: query)
+        case .draftGateway:
+            result = try executeWriteGraphQL(config: config, query: query, mode: .draftDefault)
+        case .directSender:
+            result = try executeWriteGraphQL(config: config, query: query, mode: .directSend)
+        }
         return MailGatewayCommandResult(
             exitCode: result.exitCode.rawValue,
             stdout: jsonString(result.body, pretty: pretty) + "\n",
@@ -256,11 +285,29 @@ public struct MailGatewayCLI {
     }
 }
 
-private let rootHelpText = """
-mail-gateway-reader
+private func rootHelpText(mode: MailGatewayCLIMode) -> String {
+    let executableName = mode.executableName
+    let writeNote: String
+    switch mode {
+    case .reader:
+        writeNote = """
+          This binary is read-only. Write mutations are rejected with SEND_DISABLED_IN_READER.
+        """
+    case .draftGateway:
+        writeNote = """
+          This binary is draft-first. sendMessage creates a provider draft and does not directly send mail.
+        """
+    case .directSender:
+        writeNote = """
+          This binary is the explicit sender. sendMessage directly sends mail through the provider, and createDraft creates a provider draft.
+        """
+    }
+
+    return """
+\(executableName)
 
 Usage:
-  mail-gateway-reader [--config <path>] [--pretty] <command>
+  \(executableName) [--config <path>] [--pretty] <command>
 
 Commands:
   graphql --query <query>
@@ -268,6 +315,9 @@ Commands:
   auth <login|revoke|status> --credential <id>
   cache prune [--account <id>|--all]
   file download --key <download-key> [--key <download-key> ...] [--output-dir <dir>]
+
+Write behavior:
+\(writeNote)
 
 File downloads:
   GraphQL returns file metadata and vendor-neutral downloadKey values, not file
@@ -279,16 +329,18 @@ File downloads:
   under <output-dir>/<accountId>/<messageId>/<filename> to avoid collisions.
 
 Examples:
-  mail-gateway-reader file download --config ./config.toml --key <key> --output-dir ./downloads
-  mail-gateway-reader file download --config ./config.toml --key <key-1> --key <key-2> --output-dir ./downloads
+  \(executableName) file download --config ./config.toml --key <key> --output-dir ./downloads
+  \(executableName) file download --config ./config.toml --key <key-1> --key <key-2> --output-dir ./downloads
 
 """
+}
 
-private let fileHelpText = """
-mail-gateway-reader file download
+private func fileHelpText(executableName: String) -> String {
+    """
+\(executableName) file download
 
 Usage:
-  mail-gateway-reader file download --key <download-key> [--key <download-key> ...] [--output-dir <dir>]
+  \(executableName) file download --key <download-key> [--key <download-key> ...] [--output-dir <dir>]
 
 Options:
   --key <download-key>    Vendor-neutral key returned by GraphQL file metadata.
@@ -307,3 +359,4 @@ Output:
   so files from different messages cannot overwrite each other.
 
 """
+}

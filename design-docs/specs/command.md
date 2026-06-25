@@ -15,13 +15,14 @@ Detailed specification: [design-mail-gateway.md](./design-mail-gateway.md)
 | Binary | Purpose |
 |--------|---------|
 | `mail-gateway-reader` | Phase 1 binary. Execute GraphQL read operations only |
-| `mail-gateway` | Future Phase 2 binary. Execute GraphQL read and send operations |
+| `mail-gateway-draft` | Default write-capable binary. Execute read operations and create outbound mail drafts |
+| `mail-gateway-sender` | Explicit send binary. Execute direct outbound mail send operations and draft creation |
 
 ### Subcommands
 
 | Command | Applies To | Purpose |
 |---------|------------|---------|
-| `graphql` | `mail-gateway-reader` in Phase 1 | Execute a GraphQL document with optional variables |
+| `graphql` | all binaries | Execute a GraphQL document with optional variables |
 | `auth status` | `mail-gateway-reader` in Phase 1 | Report token presence, validity hints, and access-mode mismatch for a credential profile |
 | `auth login` | `mail-gateway-reader` in Phase 1 | Perform OAuth bootstrap for a credential profile |
 | `auth revoke` | `mail-gateway-reader` in Phase 1 | Remove or invalidate locally stored tokens for a credential profile |
@@ -74,6 +75,9 @@ Credential path overrides are also supported per credential ID:
 ### Phase 1 Notes
 
 - `mail-gateway-reader` is the only binary required in the initial release
+- `mail-gateway-reader` rejects write mutations with `SEND_DISABLED_IN_READER`
+- `mail-gateway-draft` maps outbound `sendMessage` to provider draft creation by default
+- `mail-gateway-sender` is the only binary that maps `sendMessage` to provider direct send, and it also exposes `createDraft`
 - `serve` is intentionally deferred
 - `auth login` must request scopes that match the configured credential `access_mode`
 - attachments are exchanged only as files via `attachment(...)` and `localPath`, not inline payloads

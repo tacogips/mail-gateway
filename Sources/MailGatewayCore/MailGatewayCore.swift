@@ -75,6 +75,12 @@ public enum AccessMode: String, Codable, Equatable, Sendable {
     }
 }
 
+public enum ThreadSearchDirection: String, Codable, Equatable, Sendable {
+    case sent = "SENT"
+    case received = "RECEIVED"
+    case all = "ALL"
+}
+
 public enum AuthState: String, Codable, Equatable, Sendable {
     case missing = "MISSING"
     case ready = "READY"
@@ -131,7 +137,7 @@ public struct MailGatewayReaderService {
     let config: MailGatewayConfig
     let cacheRoot: String
     let attachmentRoot: String
-    private let allowedSendAttachmentRoots: [String]
+    let allowedSendAttachmentRoots: [String]
 
     public init(config: MailGatewayConfig) {
         self.config = config
@@ -147,21 +153,33 @@ public struct MailGatewayReaderService {
     }
 
     public func graphQLAccounts() -> [[String: Any]] {
+        graphQLAccounts(sendEnabled: false)
+    }
+
+    public func graphQLAccounts(sendEnabled: Bool) -> [[String: Any]] {
         config.accounts
             .sorted { $0.id < $1.id }
-            .map { buildMailAccount($0, graphQL: true) }
+            .map { buildMailAccount($0, graphQL: true, sendEnabled: sendEnabled) }
     }
 
     public func graphQLAccount(id: String) -> [String: Any]? {
+        graphQLAccount(id: id, sendEnabled: false)
+    }
+
+    public func graphQLAccount(id: String, sendEnabled: Bool) -> [String: Any]? {
         guard let account = config.accounts.first(where: { $0.id == id }) else {
             return nil
         }
-        return buildMailAccount(account, graphQL: true)
+        return buildMailAccount(account, graphQL: true, sendEnabled: sendEnabled)
     }
 
     public func searchThreads(
         accountId: String,
         query: String? = nil,
+        direction: ThreadSearchDirection? = nil,
+        labelIds: [String]? = nil,
+        receivedAfter: String? = nil,
+        receivedBefore: String? = nil,
         includeEdges: Bool = true,
         includeNodeDetails: Bool = true
     ) throws -> [String: Any] {
@@ -171,6 +189,10 @@ public struct MailGatewayReaderService {
             account: account,
             credential: credential,
             query: query,
+            direction: direction,
+            labelIds: labelIds,
+            receivedAfter: receivedAfter,
+            receivedBefore: receivedBefore,
             includeEdges: includeEdges,
             includeNodeDetails: includeNodeDetails
         )
@@ -322,7 +344,7 @@ public struct MailGatewayReaderService {
         return normalizedCandidate
     }
 
-    private func buildMailAccount(_ account: AccountConfig, graphQL: Bool) -> [String: Any] {
+    private func buildMailAccount(_ account: AccountConfig, graphQL: Bool, sendEnabled: Bool = false) -> [String: Any] {
         let credential = try? requireCredential(account.credentialId)
         let tokenState = credential.map(inspectTokenStore)?.state ?? .missing
         let configuredAccessMode = graphQL
@@ -330,7 +352,7 @@ public struct MailGatewayReaderService {
             : credential?.accessMode.rawValue ?? AccessMode.read.rawValue
         let capabilities: [String: Any] = [
             "canRead": true,
-            "canSend": false,
+            "canSend": sendEnabled && credential?.accessMode == .readSend,
             "configuredAccessMode": configuredAccessMode,
             "authState": tokenState.rawValue
         ]
@@ -342,7 +364,7 @@ public struct MailGatewayReaderService {
         ]
     }
 
-    private func requireCredential(_ credentialId: String) throws -> CredentialConfig {
+    func requireCredential(_ credentialId: String) throws -> CredentialConfig {
         guard let credential = config.credentials.first(where: { $0.id == credentialId }) else {
             throw MailGatewayError(
                 "Unknown credential: \(credentialId)",

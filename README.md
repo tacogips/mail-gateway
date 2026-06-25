@@ -6,16 +6,18 @@ The package exposes:
 
 - `MailGatewayCore`: Swift library for config loading, reader service behavior, and CLI execution
 - `mail-gateway-reader`: Phase 1 read-only command surface
+- `mail-gateway-draft`: default write surface where `sendMessage` creates a mail draft
+- `mail-gateway-sender`: explicit direct-send surface where `sendMessage` sends mail
 - `mail-gateway-swift-smoke-tests`: executable verification harness
 
 ## Build
 
 ```bash
-swift build -c release --product mail-gateway-reader
+swift build -c release
 ```
 
 ```bash
-task install-reader PREFIX="$HOME/.local"
+task install PREFIX="$HOME/.local"
 ```
 
 ## Commands
@@ -28,6 +30,8 @@ mail-gateway-reader auth status --config ./config.toml --credential gmail-person
 mail-gateway-reader auth revoke --config ./config.toml --credential gmail-personal
 mail-gateway-reader cache prune --config ./config.toml --account personal
 mail-gateway-reader graphql --config ./config.toml --query '{ accounts { id emailAddress } }'
+mail-gateway-reader graphql --config ./config.toml \
+  --query '{ threads(input: { accountId: "personal", query: "kakaku.com", direction: SENT, receivedAfter: "2026-06-25", receivedBefore: "2026-06-26" }) { totalCount } }'
 mail-gateway-reader file download --config ./config.toml --key <download-key> --output-dir ./downloads
 mail-gateway-reader file download --config ./config.toml --key <key-1> --key <key-2> --output-dir ./downloads
 ```
@@ -43,8 +47,27 @@ file only through `mail-gateway-reader file download`. Repeating `--key`
 downloads multiple files in one command and returns a `files` array; single-key
 downloads keep returning the existing single-file JSON object. Live Gmail
 metadata retrieval is available for thread/message GraphQL queries when a
-valid Gmail OAuth token store is configured; send workflows remain outside
-the current implemented baseline.
+valid Gmail OAuth token store is configured. Thread search combines structured
+filters such as `direction`, `labelIds`, `receivedAfter`, and `receivedBefore`
+with the free-text Gmail `query` argument.
+
+`mail-gateway-reader` remains read-only and rejects `sendMessage` with
+`SEND_DISABLED_IN_READER`. `mail-gateway-draft` accepts the same GraphQL
+transport but maps `sendMessage` to Gmail draft creation by default.
+`mail-gateway-sender` is the separate app for direct send and is the only
+executable that maps `sendMessage` to Gmail message send. It also includes the
+draft capability through `createDraft`.
+
+```bash
+mail-gateway-draft graphql --config ./config.toml \
+  --query 'mutation { sendMessage(input: { accountId: "personal", to: ["you@example.com"], subject: "Draft", textBody: "Review before sending" }) { status operation draftId messageId } }'
+
+mail-gateway-sender graphql --config ./config.toml \
+  --query 'mutation { sendMessage(input: { accountId: "personal", to: ["you@example.com"], subject: "Send", textBody: "Send now" }) { status operation messageId threadId } }'
+
+mail-gateway-sender graphql --config ./config.toml \
+  --query 'mutation { createDraft(input: { accountId: "personal", to: ["you@example.com"], subject: "Draft from sender", textBody: "Review before sending" }) { status operation draftId messageId } }'
+```
 
 ### File Downloads
 

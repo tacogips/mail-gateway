@@ -17,6 +17,14 @@ let package = Package(
             targets: ["MailGatewayReader"]
         ),
         .executable(
+            name: "mail-gateway-draft",
+            targets: ["MailGatewayDraft"]
+        ),
+        .executable(
+            name: "mail-gateway-sender",
+            targets: ["MailGatewaySender"]
+        ),
+        .executable(
             name: "mail-gateway-swift-smoke-tests",
             targets: ["MailGatewaySwiftSmokeTests"]
         )
@@ -27,6 +35,14 @@ let package = Package(
         ),
         .executableTarget(
             name: "MailGatewayReader",
+            dependencies: ["MailGatewayCore"]
+        ),
+        .executableTarget(
+            name: "MailGatewayDraft",
+            dependencies: ["MailGatewayCore"]
+        ),
+        .executableTarget(
+            name: "MailGatewaySender",
             dependencies: ["MailGatewayCore"]
         ),
         .executableTarget(

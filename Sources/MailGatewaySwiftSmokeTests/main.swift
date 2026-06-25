@@ -23,6 +23,11 @@ func runSmokeTests() throws {
     try testRevokeMissingToken(cleanup: &cleanup)
     try testInvalidAuthLoginClientSecret(cleanup: &cleanup)
     try testAccountsGraphQL(cleanup: &cleanup)
+    try testStructuredThreadSearchGmailQuery(cleanup: &cleanup)
+    try testReaderRejectsSendMutation(cleanup: &cleanup)
+    try testDraftGatewayRoutesSendMessageToDraft(cleanup: &cleanup)
+    try testSenderRoutesSendMessageToDirectSend(cleanup: &cleanup)
+    try testSenderAlsoRoutesCreateDraft(cleanup: &cleanup)
     try testMissingDefaultAuthThreadsGraphQLError(cleanup: &cleanup)
     try testInvalidInlineVariables(cleanup: &cleanup)
     try testInvalidVariablesFile(cleanup: &cleanup)
@@ -42,6 +47,10 @@ func testHelpOutput() throws {
         rootHelp.stdout.contains("--key <download-key> [--key <download-key> ...]"),
         "root help should document repeated download keys"
     )
+    let draftHelp = runCli(["--help"], mode: .draftGateway)
+    try assert(draftHelp.stdout.contains("sendMessage creates a provider draft"), "draft help should document draft default")
+    let senderHelp = runCli(["--help"], mode: .directSender)
+    try assert(senderHelp.stdout.contains("sendMessage directly sends mail"), "sender help should document direct send")
     let fileHelp = runCli(["file", "download", "--help"])
     try assert(fileHelp.exitCode == 0, "file download help should succeed")
     try assert(fileHelp.stdout.contains("Repeat this option"), "file download help should describe batch download")
@@ -238,6 +247,190 @@ func testAccountsGraphQL(cleanup: inout [String]) throws {
         "GraphQL access mode should be uppercased"
     )
     try assert(capabilities?["authState"] as? String == "MISSING", "GraphQL auth state should be missing")
+}
+
+func testStructuredThreadSearchGmailQuery(cleanup: inout [String]) throws {
+    let fixture = try trackedFixture(cleanup: &cleanup)
+    let tokenStoreJSON = """
+    {
+      "accessMode": "read",
+      "accessToken": "test-access-token",
+      "refreshToken": null,
+      "tokenType": "Bearer",
+      "scope": "https://www.googleapis.com/auth/gmail.readonly",
+      "expiresAt": "2999-01-01T00:00:00Z",
+      "emailAddress": "person@example.com"
+    }
+    """
+    var env = credentialEnv(fixture: fixture)
+    env[MailGatewayConfigLoader.getCredentialJSONEnvVarName(
+        credentialId: "gmail-personal",
+        valueKey: "token_store_json"
+    )] = tokenStoreJSON
+
+    GmailRequestCaptureProtocol.reset()
+    URLProtocol.registerClass(GmailRequestCaptureProtocol.self)
+    defer {
+        URLProtocol.unregisterClass(GmailRequestCaptureProtocol.self)
+        GmailRequestCaptureProtocol.reset()
+    }
+
+    let queryOnly = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", #"{ threads(input: { accountId: "personal", query: "subject:report" }) { totalCount } }"#
+    ], env: env)
+    try assert(queryOnly.exitCode == 0, "query-only thread search should continue to succeed")
+    try assert(
+        capturedGmailQuery(at: 0) == "subject:report",
+        "query-only search should preserve caller query"
+    )
+    try assert(
+        capturedGmailLabelIds(at: 0) == ["INBOX"],
+        "query-only search should preserve default label filters"
+    )
+
+    let sentWithDateRange = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query",
+        #"{ threads(input: { accountId: "personal", direction: SENT, receivedAfter: "2026-06-25T00:00:00Z", receivedBefore: "2026-06-26", query: "subject:receipt" }) { totalCount } }"#
+    ], env: env)
+    try assert(sentWithDateRange.exitCode == 0, "sent structured thread search should succeed")
+    try assert(
+        capturedGmailQuery(at: 1) == "in:sent after:2026/06/25 before:2026/06/26 subject:receipt",
+        "sent structured search should combine direction, date range, and caller query"
+    )
+    try assert(
+        capturedGmailLabelIds(at: 1).isEmpty,
+        "sent structured search should not apply default inbox labels"
+    )
+
+    let receivedWithExplicitLabels = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query",
+        #"{ threads(input: { accountId: "personal", direction: "RECEIVED", labelIds: ["IMPORTANT"], query: "from:bob@example.com" }) { totalCount } }"#
+    ], env: env)
+    try assert(receivedWithExplicitLabels.exitCode == 0, "received structured thread search should succeed")
+    try assert(
+        capturedGmailQuery(at: 2) == "-in:sent from:bob@example.com",
+        "received structured search should combine direction and caller query"
+    )
+    try assert(
+        capturedGmailLabelIds(at: 2) == ["IMPORTANT"],
+        "explicit labelIds should override default labels"
+    )
+}
+
+func capturedGmailQuery(at index: Int) -> String? {
+    capturedGmailQueryItems(at: index).first(where: { $0.name == "q" })?.value
+}
+
+func capturedGmailLabelIds(at index: Int) -> [String] {
+    capturedGmailQueryItems(at: index)
+        .filter { $0.name == "labelIds" }
+        .compactMap(\.value)
+}
+
+func capturedGmailQueryItems(at index: Int) -> [URLQueryItem] {
+    guard GmailRequestCaptureProtocol.capturedURLs.indices.contains(index),
+          let components = URLComponents(
+            url: GmailRequestCaptureProtocol.capturedURLs[index],
+            resolvingAgainstBaseURL: false
+          ) else {
+        return []
+    }
+    return components.queryItems ?? []
+}
+
+func testReaderRejectsSendMutation(cleanup: inout [String]) throws {
+    let fixture = try trackedFixture(cleanup: &cleanup)
+    let sendResult = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", outboundMutation()
+    ])
+    try assert(sendResult.exitCode == MailGatewayExitCode.graphqlExecutionError.rawValue, "reader send mutation should fail")
+    try assert(sendResult.stdout.contains("SEND_DISABLED_IN_READER"), "reader should reject send mutation with reader code")
+    let draftResult = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", draftMutation()
+    ])
+    try assert(draftResult.exitCode == MailGatewayExitCode.graphqlExecutionError.rawValue, "reader draft mutation should fail")
+    try assert(draftResult.stdout.contains("SEND_DISABLED_IN_READER"), "reader should reject draft mutation with reader code")
+}
+
+func testDraftGatewayRoutesSendMessageToDraft(cleanup: inout [String]) throws {
+    let fixture = try trackedFixture(cleanup: &cleanup)
+    let result = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", outboundMutation()
+    ], mode: .draftGateway)
+    try assert(result.exitCode == MailGatewayExitCode.graphqlExecutionError.rawValue, "draft gateway should stop before provider call")
+    try assert(result.stdout.contains("creating Gmail drafts"), "draft gateway should use draft auth context")
+    try assert(!result.stdout.contains("sending Gmail messages"), "draft gateway should not use direct-send context")
+}
+
+func testSenderRoutesSendMessageToDirectSend(cleanup: inout [String]) throws {
+    let fixture = try trackedFixture(cleanup: &cleanup)
+    let result = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", outboundMutation()
+    ], mode: .directSender)
+    try assert(result.exitCode == MailGatewayExitCode.graphqlExecutionError.rawValue, "sender should stop before provider call")
+    try assert(result.stdout.contains("sending Gmail messages"), "sender should use direct-send auth context")
+    try assert(!result.stdout.contains("creating Gmail drafts"), "sender should not use draft context")
+}
+
+func testSenderAlsoRoutesCreateDraft(cleanup: inout [String]) throws {
+    let fixture = try trackedFixture(cleanup: &cleanup)
+    let result = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", draftMutation()
+    ], mode: .directSender)
+    try assert(result.exitCode == MailGatewayExitCode.graphqlExecutionError.rawValue, "sender draft should stop before provider call")
+    try assert(result.stdout.contains("creating Gmail drafts"), "sender should include draft creation")
+    try assert(!result.stdout.contains("sending Gmail messages"), "sender draft should not use direct-send context")
+}
+
+func outboundMutation() -> String {
+    """
+    mutation {
+      sendMessage(input: {
+        accountId: "personal",
+        to: ["recipient@example.com"],
+        subject: "Smoke test",
+        textBody: "Smoke test body"
+      }) {
+        status
+        operation
+        messageId
+      }
+    }
+    """
+}
+
+func draftMutation() -> String {
+    """
+    mutation {
+      createDraft(input: {
+        accountId: "personal",
+        to: ["recipient@example.com"],
+        subject: "Smoke draft",
+        textBody: "Smoke draft body"
+      }) {
+        status
+        operation
+        draftId
+        messageId
+      }
+    }
+    """
 }
 
 func testInvalidInlineVariables(cleanup: inout [String]) throws {

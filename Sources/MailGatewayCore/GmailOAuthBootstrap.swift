@@ -440,6 +440,7 @@ private func gmailScopes(accessMode: AccessMode) -> [String] {
     case .readSend:
         return [
             "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.compose",
             "https://www.googleapis.com/auth/gmail.send"
         ]
     }

@@ -109,16 +109,16 @@ This supports reading messages and message bodies for the Phase 1 reader binary.
 Use:
 
 - `https://www.googleapis.com/auth/gmail.readonly`
+- `https://www.googleapis.com/auth/gmail.compose`
 - `https://www.googleapis.com/auth/gmail.send`
 
-This is the recommended minimum for the currently planned Phase 2 capability set: read mail plus send new outbound messages.
+This is the recommended minimum for the currently planned Phase 2 capability set: read mail, create Gmail drafts, and send new outbound messages.
 
 ### Scopes To Avoid By Default
 
 Do not request broader scopes unless the product actually needs them:
 
 - `https://www.googleapis.com/auth/gmail.modify`
-- `https://www.googleapis.com/auth/gmail.compose`
 - `https://mail.google.com/`
 
 For the current design, those are broader than necessary.
@@ -130,6 +130,7 @@ This is partly an implementation recommendation based on the repository's curren
 The current Google documentation classifies:
 
 - `gmail.send` as Sensitive
+- `gmail.compose` as Sensitive
 - `gmail.readonly` as Restricted
 - `gmail.modify` as Restricted
 - `mail.google.com` as Restricted
@@ -182,7 +183,7 @@ Interpretation:
 
 - The current implementation completes installed-app Gmail OAuth login and validates the token with the Gmail profile API. Live message retrieval is still outside the implemented baseline.
 - The credential requirements in this document describe the intended production setup for the Gmail adapter.
-- The recommendation to use `gmail.readonly` plus `gmail.send` for `read_send` is an inference from the current repository design: read access remains necessary while send support is limited to new outbound messages.
+- The recommendation to use `gmail.readonly`, `gmail.compose`, and `gmail.send` for `read_send` follows the current repository design: read access remains necessary, draft creation requires compose access, and direct sending requires send access.
 - Attachment transport remains file-path based; this document does not require any Gmail-side credential for inline attachment payloads because that feature is intentionally out of scope.
 
 ## References

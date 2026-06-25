@@ -88,6 +88,7 @@ Large features are split into multiple related plans with cross-references.
 |------|-----------|------------------|
 | credential-path-env-overrides | 2026-03-15 | design-docs/specs/design-mail-gateway.md#Configuration Model |
 | default-config-fallback | 2026-06-23 | design-docs/specs/design-mail-gateway.md#configuration-design |
+| draft-default-sender-split | 2026-06-25 | design-docs/specs/design-mail-gateway.md#outbound-mutation-semantics |
 | graphql-yoga-migration | 2026-03-16 | design-docs/specs/design-mail-gateway.md#GraphQL Design |
 | message-file-materialization | 2026-06-20 | design-docs/specs/design-mail-gateway.md#attachment-handling |
 

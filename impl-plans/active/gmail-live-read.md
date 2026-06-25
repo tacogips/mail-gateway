@@ -3,7 +3,7 @@
 **Status**: In Progress
 **Design Reference**: design-docs/specs/design-mail-gateway.md#gmail-v1-adapter
 **Created**: 2026-06-23
-**Last Updated**: 2026-06-23
+**Last Updated**: 2026-06-25
 
 ---
 
@@ -17,7 +17,7 @@ Replace the local empty thread/message stubs with live Gmail API metadata reads 
 
 ### Scope
 
-**Included**: Gmail access-token loading, refresh-token exchange, messages list/get metadata reads, thread/message GraphQL payloads, local smoke coverage for missing auth and token compatibility, docs.
+**Included**: Gmail access-token loading, refresh-token exchange, messages list/get metadata reads, starred thread search filtering, thread/message GraphQL payloads, local smoke coverage for missing auth and token compatibility, docs.
 **Excluded**: Attachment download from Gmail, full MIME body materialization, send workflow, daemon sync/cache.
 
 ---
@@ -74,6 +74,7 @@ public struct MailGatewayReaderService {
 |--------|-----------|--------|-------|
 | Gmail API Read Client | `Sources/MailGatewayCore/GmailLiveReader.swift` | COMPLETED | `swift run mail-gateway-swift-smoke-tests` |
 | Service Integration And Verification | `Sources/MailGatewayCore/MailGatewayCore.swift`, `Sources/MailGatewaySwiftSmokeTests/main.swift`, `README.md` | BLOCKED_ON_CREDENTIALS | `task ci`; direct no-config CLI checks |
+| Starred Thread Search | `Sources/MailGatewayCore/GmailLiveReader.swift`, `Sources/MailGatewayCore/MailGatewayGraphQL.swift`, `Sources/MailGatewaySwiftSmokeTests/main.swift`, `README.md`, `design-docs/specs/design-mail-gateway.md` | COMPLETED | `swift run mail-gateway-swift-smoke-tests` |
 
 ## Dependencies
 
@@ -100,9 +101,26 @@ Implement live Gmail metadata retrieval through the existing reader GraphQL oper
 - [x] Local tests and CLI checks pass
 - [x] Live Gmail retrieval attempted with available local/env credentials
 
+### TASK-002: Gmail Starred Thread Search
+
+**Status**: Completed
+**Parallelizable**: Yes
+**Deliverables**: `Sources/MailGatewayCore/GmailLiveReader.swift`, `Sources/MailGatewayCore/MailGatewayCore.swift`, `Sources/MailGatewayCore/MailGatewayGraphQL.swift`, `Sources/MailGatewaySwiftSmokeTests/main.swift`, `README.md`, `design-docs/specs/design-mail-gateway.md`
+**Dependencies**: TASK-001
+
+**Description**:
+Expose a first-class `starred` filter on thread search and combine it with the existing Gmail query path.
+
+**Completion Criteria**:
+- [x] `threads(input:)` accepts `starred: true`
+- [x] Gmail message listing combines `is:starred` with any supplied `query`
+- [x] Account default label filters continue to be sent
+- [x] Smoke tests cover starred-only, starred-plus-query, and query-only behavior without live Gmail credentials
+
 ## Completion Criteria
 
 - [x] Live read implementation completed
+- [x] Starred thread search implemented
 - [x] Tests passing
 - [x] Documentation updated
 - [x] Direct verification completed
@@ -156,6 +174,12 @@ Implement live Gmail metadata retrieval through the existing reader GraphQL oper
 **Tasks In Progress**: None for the verified Gmail read path.
 **Blockers**: None for kinko-backed live verification.
 **Notes**: Kept the current live Gmail body/attachment behavior intact, removed dead parser helper code, confirmed root-field dispatch and direct-selection projection coverage, and reran `swift build`, `swift run mail-gateway-swift-smoke-tests`, `task ci`, and `git diff --check`.
+
+### Session: 2026-06-25 16:20
+**Tasks Completed**: TASK-002
+**Tasks In Progress**: None for starred thread search
+**Blockers**: None for local starred-search verification
+**Notes**: Riela simple-work review identified the missing starred filter in the current diff. Added `starred: true` thread search support, composed Gmail `is:starred` with caller query text, preserved default label filters, and added URL-intercepted smoke coverage that does not require live Gmail credentials.
 
 ## Related Plans
 

@@ -10,7 +10,8 @@ Phase 1 ships one Swift Package Manager binary:
 
 Phase 2 adds:
 
-- `mail-gateway`: read and send access to configured mail accounts
+- `mail-gateway-draft`: read access plus default outbound draft creation
+- `mail-gateway-sender`: explicit direct-send access to configured mail accounts, including draft creation
 
 All business operations are exposed through GraphQL. The CLI surface exists only for bootstrapping, configuration validation, authentication setup, cache maintenance, and GraphQL transport.
 
@@ -31,7 +32,7 @@ All business operations are exposed through GraphQL. The CLI surface exists only
 - Support inline attachment payloads in GraphQL responses
 - Synchronize an entire mailbox into a local database in v1
 - Ship long-running `serve` mode in Phase 1
-- Ship reply, forward, or draft workflows in the first send implementation
+- Ship reply or forward workflows in the first write implementation
 
 ## Product Surface
 
@@ -40,7 +41,8 @@ All business operations are exposed through GraphQL. The CLI surface exists only
 | Binary | Read Mail | Send Mail | GraphQL Schema |
 |--------|-----------|-----------|----------------|
 | `mail-gateway-reader` | Yes | No | `Query` only, plus local-cache side effects such as attachment materialization |
-| `mail-gateway` | Planned for Phase 2 | Planned for Phase 2 | `Query` and `Mutation` once send is implemented |
+| `mail-gateway-draft` | Planned for Phase 2 | Draft only by default | `Query` and draft-backed `Mutation` |
+| `mail-gateway-sender` | Planned for Phase 2 | Yes, explicit direct send and draft creation | `Query`, direct-send `Mutation`, and draft `Mutation` |
 
 `mail-gateway-reader` must fail fast if a send mutation is submitted. This is enforced by exposing a reduced schema rather than only checking at resolver runtime.
 
@@ -55,7 +57,7 @@ mail-gateway-reader graphql --query-file ./query.graphql --variables-file ./vars
 An optional long-running mode may be added later:
 
 ```bash
-mail-gateway serve --listen 127.0.0.1:9407
+mail-gateway-draft serve --listen 127.0.0.1:9407
 ```
 
 For Phase 1, the one-shot `graphql` command is the required transport because it is simpler for local AI tool integration and avoids introducing daemon lifecycle management as a prerequisite.
@@ -78,7 +80,7 @@ Credential profiles are defined independently from mail accounts. Mail accounts 
 Credential profiles also declare an explicit `access_mode`:
 
 - `read`: read-only token scope
-- `read_send`: read and send token scope
+- `read_send`: read, draft creation, and send token scopes
 
 This allows `auth login` and `auth status` to detect scope mismatches between configured intent and stored token metadata.
 
@@ -142,7 +144,8 @@ default_label_ids = ["INBOX", "IMPORTANT"]
 - GraphQL is the only business API surface
 - account selection is always explicit in message and thread queries
 - provider-specific details are exposed in a namespaced way only when the canonical model is insufficient
-- send operations exist only in `mail-gateway`
+- draft creation exists in `mail-gateway-draft`
+- direct send operations exist only in `mail-gateway-sender`
 - filesystem materialization paths are returned only by explicit gateway download
   commands, not by GraphQL message-file metadata
 - nested thread and message queries return attachment metadata only; explicit hydration is performed only through `attachment(...)`
@@ -172,6 +175,7 @@ Phase 2 adds:
 
 ```graphql
 type Mutation {
+  createDraft(input: SendMessageInput!): SendMessagePayload!
   sendMessage(input: SendMessageInput!): SendMessagePayload!
 }
 ```
@@ -205,6 +209,15 @@ enum MailDirectionFilter {
 - `SENT`: messages where the selected account is the effective sender
 - `RECEIVED`: messages where the selected account is a recipient and not the effective sender
 - `ALL`: no sent/received direction filter
+
+`query` remains the raw provider search escape hatch and is combined with
+structured filters using AND semantics. For Gmail-backed accounts,
+`direction: SENT` maps to `in:sent`, `direction: RECEIVED` maps to `-in:sent`,
+`receivedAfter` maps to `after:YYYY/MM/DD`, `receivedBefore` maps to
+`before:YYYY/MM/DD`. Explicit `labelIds` are sent as Gmail `labelIds` API
+parameters. When `labelIds` is not provided, configured default label filters
+are preserved except that `direction: SENT` does not apply the default inbox
+label filter.
 
 ### Core Domain Types
 
@@ -339,17 +352,29 @@ enum AuthState {
 - `from` filters by sender address or addresses
 - `hasAttachments: true` limits results to messages with at least one attachment; `false` limits results to messages without attachments
 
-### Send Mutation Semantics
+### Outbound Mutation Semantics
 
-Phase 1 does not expose mutations. Phase 2 introduces `sendMessage` for new outbound messages only:
+Phase 1 does not expose mutations. Phase 2 introduces `sendMessage` for new outbound messages only, with binary-specific behavior:
+
+- `mail-gateway-draft` treats `sendMessage` as draft creation and never sends the message immediately
+- `mail-gateway-sender` treats `sendMessage` as direct provider send and also supports `createDraft`
+- `mail-gateway-reader` rejects write mutations with `SEND_DISABLED_IN_READER`
+
+The shared input fields are:
 
 - required `accountId`
 - header fields (`to`, `cc`, `bcc`, `subject`, `replyTo`)
 - body variants (`textBody`, `htmlBody`)
 - attachments by validated local file path
-- no reply, forward, or draft workflow in the first send implementation
+- no reply or forward workflow in the first write implementation
 
-`sendMessage` returns:
+`mail-gateway-draft` `sendMessage` and `mail-gateway-sender` `createDraft` return:
+
+- canonical draft metadata
+- provider-assigned draft ID and message ID when available
+- rejected attachment paths with reasons if partial validation fails before draft creation
+
+`mail-gateway-sender` `sendMessage` returns:
 
 - canonical sent message metadata
 - provider-assigned message ID and thread ID
@@ -400,7 +425,8 @@ Each provider implements:
 - `getThread`
 - `getMessage`
 - `getAttachmentContent`
-- `sendMessage` when the provider supports send
+- draft creation when the provider supports drafts
+- direct send when the provider supports send and the `mail-gateway-sender` executable is used
 - `validateCredentialConfig`
 - `interactiveAuthorize`
 
@@ -410,7 +436,7 @@ The GraphQL layer depends only on the canonical provider interface. Gmail-specif
 
 The Gmail adapter uses:
 
-- Gmail API for threads, messages, attachments, and send
+- Gmail API for threads, messages, attachments, draft creation, and send
 - OAuth 2.0 installed-app flow with PKCE where available
 - per-credential token stores on local disk
 
@@ -470,7 +496,9 @@ GraphQL errors should be structured with machine-readable extension codes:
 
 ## Security Constraints
 
-- the reader binary must not link or expose send resolvers
+- the reader binary must not expose write resolvers
+- direct send resolvers must be reachable only through `mail-gateway-sender`
+- `mail-gateway-sender` may also expose draft resolvers, but draft resolvers must not send mail
 - file paths returned in GraphQL must always be normalized under configured storage roots
 - attachment filenames must be sanitized to prevent path traversal or control-character issues
 - sending attachments must read only explicit local paths supplied by the caller and only from configured allowlist roots
@@ -509,7 +537,8 @@ Adding a new provider should usually require:
 
 ### Phase 2
 
-- Gmail send support in `mail-gateway`
+- Gmail draft creation support in `mail-gateway-draft`
+- Gmail direct send support in `mail-gateway-sender`
 - new outbound messages only
 - long-running `serve` mode if local client ergonomics require it
 
