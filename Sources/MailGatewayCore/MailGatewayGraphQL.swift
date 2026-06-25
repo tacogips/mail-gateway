@@ -450,6 +450,9 @@ private func extractOptionalBooleanArgument(_ name: String, from query: String) 
     if value == "false" {
         return false
     }
+    if value == "null" {
+        return nil
+    }
     throw MailGatewayError(
         "GraphQL argument \(name) must be a boolean literal",
         code: .invalidArgument,
