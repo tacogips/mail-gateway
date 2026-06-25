@@ -313,19 +313,3 @@ func decodeMessageFileDownloadKey(_ rawKey: String) throws -> MessageFileDownloa
         filename: sanitizedFilename(filename)
     )
 }
-
-private func base64URLString(_ data: Data) -> String {
-    data.base64EncodedString()
-        .replacingOccurrences(of: "+", with: "-")
-        .replacingOccurrences(of: "/", with: "_")
-        .replacingOccurrences(of: "=", with: "")
-}
-
-private func dataFromBase64URLString(_ value: String) -> Data? {
-    var base64 = value
-        .replacingOccurrences(of: "-", with: "+")
-        .replacingOccurrences(of: "_", with: "/")
-    let padding = (4 - base64.count % 4) % 4
-    base64 += String(repeating: "=", count: padding)
-    return Data(base64Encoded: base64)
-}

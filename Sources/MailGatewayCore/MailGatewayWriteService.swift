@@ -74,7 +74,7 @@ public struct MailGatewayWriteService {
                 exitCode: .graphqlExecutionError
             )
         }
-        try validateOutboundInput(input)
+        try validateOutboundInput(input, account: account)
         let validatedAttachments = try input.attachmentPaths.map(readerService.validateSendAttachmentPath)
 
         switch mode {
@@ -96,10 +96,18 @@ public struct MailGatewayWriteService {
     }
 }
 
-private func validateOutboundInput(_ input: OutboundMailInput) throws {
-    if input.to.isEmpty && input.cc.isEmpty && input.bcc.isEmpty {
+private func validateOutboundInput(_ input: OutboundMailInput, account: AccountConfig) throws {
+    let recipients = input.to + input.cc + input.bcc
+    if recipients.isEmpty {
         throw MailGatewayError(
             "sendMessage requires at least one to, cc, or bcc recipient",
+            code: .invalidArgument,
+            exitCode: .graphqlExecutionError
+        )
+    }
+    if recipients.contains(where: { nonBlank($0) == nil }) {
+        throw MailGatewayError(
+            "sendMessage recipient values must not be blank",
             code: .invalidArgument,
             exitCode: .graphqlExecutionError
         )
@@ -111,7 +119,7 @@ private func validateOutboundInput(_ input: OutboundMailInput) throws {
             exitCode: .graphqlExecutionError
         )
     }
-    let headerValues = input.to + input.cc + input.bcc + [input.subject, input.replyTo].compactMap { $0 }
+    let headerValues = [account.emailAddress] + recipients + [input.subject, input.replyTo].compactMap { $0 }
     try headerValues.forEach { value in
         if value.contains("\r") || value.contains("\n") {
             throw MailGatewayError(

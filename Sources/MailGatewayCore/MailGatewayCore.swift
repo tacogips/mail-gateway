@@ -285,14 +285,20 @@ public struct MailGatewayReaderService {
     }
 
     public func pruneCache(accountId: String?, all: Bool) throws -> [String: Any] {
-        if !all && accountId == nil {
+        let targets: [String]
+        switch (all, accountId) {
+        case (true, nil):
+            targets = [attachmentRoot]
+        case (false, .some(let accountId)):
+            let account = try requireAccount(accountId)
+            targets = [URL(fileURLWithPath: attachmentRoot).appendingPathComponent(account.id, isDirectory: true).path]
+        case (false, nil):
             throw MailGatewayError(
                 "cache prune requires --all or --account",
                 code: .invalidArgument,
                 exitCode: .invalidCliUsage
             )
-        }
-        if all && accountId != nil {
+        case (true, .some):
             throw MailGatewayError(
                 "cache prune accepts either --all or --account, but not both",
                 code: .invalidArgument,
@@ -305,14 +311,6 @@ public struct MailGatewayReaderService {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
-
-        let targets: [String]
-        if all || accountId == nil {
-            targets = [attachmentRoot]
-        } else {
-            let account = try requireAccount(accountId!)
-            targets = [URL(fileURLWithPath: attachmentRoot).appendingPathComponent(account.id, isDirectory: true).path]
-        }
 
         var prunedPaths: [String] = []
         for target in targets {

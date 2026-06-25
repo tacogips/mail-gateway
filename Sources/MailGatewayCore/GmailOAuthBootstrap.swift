@@ -5,7 +5,7 @@ import Security
 
 struct GmailOAuthBootstrapper {
     func login(credential: CredentialConfig) throws -> [String: Any] {
-        let client = try loadOAuthClient(credential: credential)
+        let client = try loadGoogleOAuthClient(credential: credential, use: .desktopLogin)
         let receiver = try LoopbackOAuthReceiver()
         let state = try randomURLSafeString(byteCount: 32)
         let codeVerifier = try randomURLSafeString(byteCount: 32)
@@ -30,7 +30,12 @@ struct GmailOAuthBootstrapper {
             tokenResponse: tokenResponse,
             profile: validateGmailProfile(accessToken: tokenResponse.accessToken)
         )
-        try writeTokenStore(tokenStore, to: credential.tokenStorePath)
+        try writeGmailOAuthTokenStore(
+            tokenStore,
+            to: credential.tokenStorePath,
+            errorMessage: "Failed to write Gmail OAuth token store",
+            exitCode: .authenticationBootstrapError
+        )
 
         return [
             "credentialId": credential.id,
@@ -42,24 +47,6 @@ struct GmailOAuthBootstrapper {
             "hasRefreshToken": tokenStore.refreshToken?.isEmpty == false
         ]
     }
-}
-
-private struct GoogleOAuthClient: Decodable {
-    let clientId: String
-    let clientSecret: String?
-    let authURI: String
-    let tokenURI: String
-
-    enum CodingKeys: String, CodingKey {
-        case clientId = "client_id"
-        case clientSecret = "client_secret"
-        case authURI = "auth_uri"
-        case tokenURI = "token_uri"
-    }
-}
-
-private struct GoogleOAuthClientFile: Decodable {
-    let installed: GoogleOAuthClient?
 }
 
 private struct GmailOAuthTokenResponse {
@@ -173,39 +160,6 @@ private final class LoopbackOAuthReceiver {
     }
 }
 
-private func loadOAuthClient(credential: CredentialConfig) throws -> GoogleOAuthClient {
-    do {
-        let data: Data
-        if let oauthClientSecretJSON = credential.oauthClientSecretJSON {
-            data = Data(oauthClientSecretJSON.utf8)
-        } else {
-            data = try Data(contentsOf: URL(fileURLWithPath: credential.oauthClientSecretPath))
-        }
-        let decoded = try JSONDecoder().decode(GoogleOAuthClientFile.self, from: data)
-        guard let installed = decoded.installed,
-              nonBlank(installed.clientId) != nil,
-              nonBlank(installed.authURI) != nil,
-              nonBlank(installed.tokenURI) != nil else {
-            throw MailGatewayError(
-                "OAuth client JSON must contain an installed desktop client",
-                code: .configInvalid,
-                exitCode: .authenticationBootstrapError,
-                details: ["path": credential.oauthClientSecretPath]
-            )
-        }
-        return installed
-    } catch let error as MailGatewayError {
-        throw error
-    } catch {
-        throw MailGatewayError(
-            "Failed to read Gmail OAuth client JSON",
-            code: .configInvalid,
-            exitCode: .authenticationBootstrapError,
-            details: ["path": credential.oauthClientSecretPath, "cause": error.localizedDescription]
-        )
-    }
-}
-
 private func buildAuthorizationURL(
     client: GoogleOAuthClient,
     credential: CredentialConfig,
@@ -213,7 +167,8 @@ private func buildAuthorizationURL(
     state: String,
     codeVerifier: String
 ) throws -> URL {
-    guard var components = URLComponents(string: client.authURI) else {
+    guard let authURI = nonBlank(client.authURI),
+          var components = URLComponents(string: authURI) else {
         throw authError("OAuth client auth_uri is invalid")
     }
     components.queryItems = [
@@ -294,7 +249,8 @@ private func exchangeAuthorizationCode(
     codeVerifier: String,
     redirectURI: String
 ) throws -> GmailOAuthTokenResponse {
-    guard let tokenURL = URL(string: client.tokenURI) else {
+    guard let tokenURI = nonBlank(client.tokenURI),
+          let tokenURL = URL(string: tokenURI) else {
         throw authError("OAuth client token_uri is invalid")
     }
     var fields: [(String, String)] = [
@@ -314,7 +270,7 @@ private func exchangeAuthorizationCode(
     request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
     request.httpBody = formURLEncoded(fields).data(using: .utf8)
 
-    let response = try performHTTPRequest(request, errorContext: "Gmail OAuth token exchange failed")
+    let response = try performGmailHTTPRequest(request, context: "Gmail OAuth token exchange failed")
     guard let object = try JSONSerialization.jsonObject(with: response.data) as? [String: Any] else {
         throw authError("Gmail OAuth token response was not a JSON object")
     }
@@ -330,67 +286,23 @@ private func exchangeAuthorizationCode(
         refreshToken: nonBlank(object["refresh_token"] as? String),
         tokenType: nonBlank(object["token_type"] as? String),
         scope: nonBlank(object["scope"] as? String),
-        expiresIn: object["expires_in"] as? Int
+        expiresIn: intValue(object["expires_in"])
     )
 }
 
 private func validateGmailProfile(accessToken: String) throws -> GmailProfile {
-    var request = URLRequest(url: URL(string: "https://gmail.googleapis.com/gmail/v1/users/me/profile")!)
+    guard let url = URL(string: "https://gmail.googleapis.com/gmail/v1/users/me/profile") else {
+        throw authError("Failed to construct Gmail profile URL")
+    }
+    var request = URLRequest(url: url)
     request.httpMethod = "GET"
     request.timeoutInterval = 30
     request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-    let response = try performHTTPRequest(request, errorContext: "Gmail profile validation failed")
+    let response = try performGmailHTTPRequest(request, context: "Gmail profile validation failed")
     guard let object = try JSONSerialization.jsonObject(with: response.data) as? [String: Any] else {
         throw authError("Gmail profile response was not a JSON object")
     }
     return GmailProfile(emailAddress: nonBlank(object["emailAddress"] as? String))
-}
-
-private func performHTTPRequest(_ request: URLRequest, errorContext: String) throws -> (data: Data, response: HTTPURLResponse) {
-    let semaphore = DispatchSemaphore(value: 0)
-    var result: Result<(Data, HTTPURLResponse), Error>?
-    URLSession.shared.dataTask(with: request) { data, response, error in
-        defer {
-            semaphore.signal()
-        }
-        if let error {
-            result = .failure(error)
-            return
-        }
-        guard let data,
-              let httpResponse = response as? HTTPURLResponse else {
-            result = .failure(authError("HTTP response was empty"))
-            return
-        }
-        result = .success((data, httpResponse))
-    }.resume()
-    semaphore.wait()
-
-    let resolved: (Data, HTTPURLResponse)
-    do {
-        resolved = try result?.get() ?? {
-            throw authError("HTTP request did not complete")
-        }()
-    } catch let error as MailGatewayError {
-        throw error
-    } catch {
-        throw MailGatewayError(
-            errorContext,
-            code: .providerApiError,
-            exitCode: .providerApiError,
-            details: ["cause": error.localizedDescription]
-        )
-    }
-    guard (200..<300).contains(resolved.1.statusCode) else {
-        let body = String(data: resolved.0, encoding: .utf8) ?? ""
-        throw MailGatewayError(
-            errorContext,
-            code: .providerApiError,
-            exitCode: .providerApiError,
-            details: ["httpStatus": String(resolved.1.statusCode), "body": String(body.prefix(1_000))]
-        )
-    }
-    return resolved
 }
 
 private func buildTokenStore(
@@ -412,27 +324,6 @@ private func buildTokenStore(
     )
 }
 
-private func writeTokenStore(_ tokenStore: GmailOAuthTokenStore, to path: String) throws {
-    do {
-        let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let data = try JSONEncoder().encode(tokenStore)
-        try data.write(to: URL(fileURLWithPath: path), options: [.atomic])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
-    } catch {
-        throw MailGatewayError(
-            "Failed to write Gmail OAuth token store",
-            code: .authRequired,
-            exitCode: .authenticationBootstrapError,
-            details: ["path": path, "cause": error.localizedDescription]
-        )
-    }
-}
-
 private func gmailScopes(accessMode: AccessMode) -> [String] {
     switch accessMode {
     case .read:
@@ -452,32 +343,11 @@ private func randomURLSafeString(byteCount: Int) throws -> String {
     guard status == errSecSuccess else {
         throw authError("Failed to generate secure OAuth random value")
     }
-    return base64URLEncoded(Data(bytes))
+    return base64URLString(Data(bytes))
 }
 
 private func codeChallenge(for verifier: String) -> String {
-    base64URLEncoded(Data(SHA256.hash(data: Data(verifier.utf8))))
-}
-
-private func base64URLEncoded(_ data: Data) -> String {
-    data.base64EncodedString()
-        .replacingOccurrences(of: "+", with: "-")
-        .replacingOccurrences(of: "/", with: "_")
-        .replacingOccurrences(of: "=", with: "")
-}
-
-private func formURLEncoded(_ fields: [(String, String)]) -> String {
-    fields
-        .map { key, value in
-            "\(urlFormEncode(key))=\(urlFormEncode(value))"
-        }
-        .joined(separator: "&")
-}
-
-private func urlFormEncode(_ value: String) -> String {
-    var allowed = CharacterSet.urlQueryAllowed
-    allowed.remove(charactersIn: ":#[]@!$&'()*+,;=")
-    return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    base64URLString(Data(SHA256.hash(data: Data(verifier.utf8))))
 }
 
 private func writeHTTPResponse(_ connection: Int32, success: Bool) throws {

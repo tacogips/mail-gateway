@@ -57,3 +57,79 @@ func sanitizedFilename(_ value: String) -> String {
     let trimmed = String(cleaned).trimmingCharacters(in: CharacterSet(charactersIn: "."))
     return trimmed.isEmpty ? "file" : trimmed
 }
+
+func base64URLString(_ data: Data) -> String {
+    data.base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+}
+
+func dataFromBase64URLString(_ value: String) -> Data? {
+    guard isBase64URLString(value),
+          value.count % 4 != 1 else {
+        return nil
+    }
+    var base64 = value
+        .replacingOccurrences(of: "-", with: "+")
+        .replacingOccurrences(of: "_", with: "/")
+    let padding = (4 - base64.count % 4) % 4
+    base64 += String(repeating: "=", count: padding)
+    return Data(base64Encoded: base64)
+}
+
+func formURLEncoded(_ fields: [(String, String)]) -> String {
+    fields
+        .map { key, value in
+            "\(urlFormEncode(key))=\(urlFormEncode(value))"
+        }
+        .joined(separator: "&")
+}
+
+func intValue(_ value: Any?) -> Int? {
+    if let value = value as? NSNumber {
+        if value === kCFBooleanTrue || value === kCFBooleanFalse || CFGetTypeID(value) == CFBooleanGetTypeID() {
+            return nil
+        }
+        let double = value.doubleValue
+        guard double.isFinite,
+              double >= Double(Int.min),
+              double <= Double(Int.max),
+              double.rounded(.towardZero) == double else {
+            return nil
+        }
+        return Int(double)
+    }
+    if value is Bool {
+        return nil
+    }
+    if let value = value as? Int {
+        return value
+    }
+    if let value = value as? String {
+        return nonBlank(value).flatMap(Int.init)
+    }
+    return nil
+}
+
+private func urlFormEncode(_ value: String) -> String {
+    let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+}
+
+private func isBase64URLString(_ value: String) -> Bool {
+    var hasPadding = false
+    for scalar in value.unicodeScalars {
+        switch scalar.value {
+        case 48...57, 65...90, 97...122, 45, 95:
+            if hasPadding {
+                return false
+            }
+        case 61:
+            hasPadding = true
+        default:
+            return false
+        }
+    }
+    return true
+}

@@ -3,11 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
-products=(
-  "mail-gateway-reader"
-  "mail-gateway-draft"
-  "mail-gateway-sender"
-)
+source "$script_dir/homebrew-release-common.sh"
 
 usage() {
   cat <<EOF
@@ -18,7 +14,7 @@ Targets:
   darwin-arm64  darwin-x64
 
 Products:
-  mail-gateway-reader  mail-gateway-draft  mail-gateway-sender
+  $(homebrew_product_list)
 
 Environment:
   RELEASE_VERSION       Override package version used in archive names.
@@ -53,26 +49,6 @@ detect_target() {
   esac
 }
 
-is_product() {
-  local candidate product
-  candidate="$1"
-  for product in "${products[@]}"; do
-    if [[ "$candidate" == "$product" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-validate_product() {
-  if ! is_product "$1"; then
-    printf 'unsupported Swift Homebrew product: %s\n' "$1" >&2
-    printf 'supported products: %s\n' "${products[*]}" >&2
-    usage >&2
-    return 1
-  fi
-}
-
 validate_target() {
   case "$1" in
     darwin-arm64 | darwin-x64) ;;
@@ -83,17 +59,6 @@ validate_target() {
       return 1
       ;;
   esac
-}
-
-validate_version() {
-  local version
-  version="$1"
-
-  if [[ "$version" == *..* || ! "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z][0-9A-Za-z.+-]*)?$ ]]; then
-    printf 'unsafe release version: %s\n' "$version" >&2
-    printf 'expected archive-safe semver-like value without path separators or parent traversal\n' >&2
-    return 1
-  fi
 }
 
 absolute_path() {
@@ -268,7 +233,7 @@ main() {
 
   local version release_dir
   version="$(package_version)"
-  validate_version "$version"
+  validate_homebrew_version "$version"
   release_dir="$(absolute_path "${RELEASE_DIR:-dist/homebrew}")"
   validate_release_dir "$release_dir"
 
@@ -278,7 +243,7 @@ main() {
 
   local arg
   for arg in "$@"; do
-    if is_product "$arg"; then
+    if is_homebrew_product "$arg"; then
       selected_products+=("$arg")
     else
       validate_target "$arg"
@@ -287,7 +252,7 @@ main() {
   done
 
   if [[ "${#selected_products[@]}" -eq 0 ]]; then
-    selected_products=("${products[@]}")
+    selected_products=("${homebrew_products[@]}")
   fi
 
   if [[ "${#targets[@]}" -eq 0 ]]; then
@@ -296,7 +261,10 @@ main() {
 
   local product target
   for product in "${selected_products[@]}"; do
-    validate_product "$product"
+    validate_homebrew_product "$product" || {
+      usage >&2
+      return 1
+    }
     for target in "${targets[@]}"; do
       if [[ "$dry_run" == true ]]; then
         print_plan "$product" "$version" "$target" "$release_dir"
