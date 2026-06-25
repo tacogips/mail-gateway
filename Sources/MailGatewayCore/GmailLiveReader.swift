@@ -5,6 +5,7 @@ struct GmailLiveReader {
         account: AccountConfig,
         credential: CredentialConfig,
         query: String?,
+        starred: Bool,
         direction: ThreadSearchDirection?,
         labelIds: [String]?,
         receivedAfter: String?,
@@ -17,6 +18,7 @@ struct GmailLiveReader {
             account: account,
             accessToken: accessToken,
             query: query,
+            starred: starred,
             direction: direction,
             labelIds: labelIds,
             receivedAfter: receivedAfter,
@@ -324,6 +326,7 @@ private func listMessages(
     account: AccountConfig,
     accessToken: String,
     query: String?,
+    starred: Bool,
     direction: ThreadSearchDirection?,
     labelIds: [String]?,
     receivedAfter: String?,
@@ -335,6 +338,7 @@ private func listMessages(
     ]
     if let query = gmailMessageSearchQuery(
         query: query,
+        starred: starred,
         direction: direction,
         receivedAfter: receivedAfter,
         receivedBefore: receivedBefore
@@ -366,6 +370,7 @@ private func listMessages(
 
 private func gmailMessageSearchQuery(
     query: String?,
+    starred: Bool,
     direction: ThreadSearchDirection?,
     receivedAfter: String?,
     receivedBefore: String?
@@ -384,6 +389,9 @@ private func gmailMessageSearchQuery(
     }
     if let receivedBefore = gmailSearchDateTerm(prefix: "before", value: receivedBefore) {
         terms.append(receivedBefore)
+    }
+    if starred {
+        terms.append("is:starred")
     }
     if let query = nonBlank(query) {
         terms.append(query)

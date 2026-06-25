@@ -275,6 +275,32 @@ func testStructuredThreadSearchGmailQuery(cleanup: inout [String]) throws {
         GmailRequestCaptureProtocol.reset()
     }
 
+    let starredOnly = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", #"{ threads(input: { accountId: "personal", starred: true }) { totalCount } }"#
+    ], env: env)
+    try assert(starredOnly.exitCode == 0, "starred-only thread search should succeed")
+    try assert(
+        capturedGmailQuery(at: 0) == "is:starred",
+        "starred-only search should add Gmail starred query"
+    )
+    try assert(
+        capturedGmailLabelIds(at: 0) == ["INBOX"],
+        "starred search should preserve default label filters"
+    )
+
+    let starredWithQuery = runCli([
+        "graphql",
+        "--config", fixture.configPath,
+        "--query", #"{ threads(input: { accountId: "personal", starred: true, query: "from:alice@example.com" }) { totalCount } }"#
+    ], env: env)
+    try assert(starredWithQuery.exitCode == 0, "starred-plus-query thread search should succeed")
+    try assert(
+        capturedGmailQuery(at: 1) == "is:starred from:alice@example.com",
+        "starred search should combine Gmail starred query and caller query"
+    )
+
     let queryOnly = runCli([
         "graphql",
         "--config", fixture.configPath,
@@ -282,11 +308,11 @@ func testStructuredThreadSearchGmailQuery(cleanup: inout [String]) throws {
     ], env: env)
     try assert(queryOnly.exitCode == 0, "query-only thread search should continue to succeed")
     try assert(
-        capturedGmailQuery(at: 0) == "subject:report",
+        capturedGmailQuery(at: 2) == "subject:report",
         "query-only search should preserve caller query"
     )
     try assert(
-        capturedGmailLabelIds(at: 0) == ["INBOX"],
+        capturedGmailLabelIds(at: 2) == ["INBOX"],
         "query-only search should preserve default label filters"
     )
 
@@ -298,11 +324,11 @@ func testStructuredThreadSearchGmailQuery(cleanup: inout [String]) throws {
     ], env: env)
     try assert(sentWithDateRange.exitCode == 0, "sent structured thread search should succeed")
     try assert(
-        capturedGmailQuery(at: 1) == "in:sent after:2026/06/25 before:2026/06/26 subject:receipt",
+        capturedGmailQuery(at: 3) == "in:sent after:2026/06/25 before:2026/06/26 subject:receipt",
         "sent structured search should combine direction, date range, and caller query"
     )
     try assert(
-        capturedGmailLabelIds(at: 1).isEmpty,
+        capturedGmailLabelIds(at: 3).isEmpty,
         "sent structured search should not apply default inbox labels"
     )
 
@@ -314,11 +340,11 @@ func testStructuredThreadSearchGmailQuery(cleanup: inout [String]) throws {
     ], env: env)
     try assert(receivedWithExplicitLabels.exitCode == 0, "received structured thread search should succeed")
     try assert(
-        capturedGmailQuery(at: 2) == "-in:sent from:bob@example.com",
+        capturedGmailQuery(at: 4) == "-in:sent from:bob@example.com",
         "received structured search should combine direction and caller query"
     )
     try assert(
-        capturedGmailLabelIds(at: 2) == ["IMPORTANT"],
+        capturedGmailLabelIds(at: 4) == ["IMPORTANT"],
         "explicit labelIds should override default labels"
     )
 }

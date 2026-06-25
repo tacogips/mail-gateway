@@ -186,6 +186,7 @@ type Mutation {
 input ThreadSearchInput {
   accountId: ID!
   query: String
+  starred: Boolean
   labelIds: [String!]
   unread: Boolean
   from: [String!]
@@ -214,10 +215,10 @@ enum MailDirectionFilter {
 structured filters using AND semantics. For Gmail-backed accounts,
 `direction: SENT` maps to `in:sent`, `direction: RECEIVED` maps to `-in:sent`,
 `receivedAfter` maps to `after:YYYY/MM/DD`, `receivedBefore` maps to
-`before:YYYY/MM/DD`. Explicit `labelIds` are sent as Gmail `labelIds` API
-parameters. When `labelIds` is not provided, configured default label filters
-are preserved except that `direction: SENT` does not apply the default inbox
-label filter.
+`before:YYYY/MM/DD`, and `starred: true` adds `is:starred`. Explicit
+`labelIds` are sent as Gmail `labelIds` API parameters. When `labelIds` is not
+provided, configured default label filters are preserved except that
+`direction: SENT` does not apply the default inbox label filter.
 
 ### Core Domain Types
 

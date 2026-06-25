@@ -48,6 +48,7 @@ private func executeReaderGraphQLData(service: MailGatewayReaderService, query: 
                 try service.searchThreads(
                     accountId: try extractStringArgument("accountId", from: source),
                     query: try extractOptionalStringArgument("query", from: source),
+                    starred: try extractOptionalBooleanArgument("starred", from: source) ?? false,
                     direction: try extractOptionalThreadSearchDirectionArgument("direction", from: source),
                     labelIds: try extractOptionalStringArrayArgument("labelIds", from: source),
                     receivedAfter: try extractOptionalStringArgument("receivedAfter", from: source),

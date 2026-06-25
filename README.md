@@ -49,7 +49,13 @@ downloads keep returning the existing single-file JSON object. Live Gmail
 metadata retrieval is available for thread/message GraphQL queries when a
 valid Gmail OAuth token store is configured. Thread search combines structured
 filters such as `direction`, `labelIds`, `receivedAfter`, and `receivedBefore`
-with the free-text Gmail `query` argument.
+with the free-text Gmail `query` argument. It also accepts Gmail-backed star
+filtering through `starred: true`.
+
+```bash
+mail-gateway-reader graphql --config ./config.toml \
+  --query '{ threads(input: { accountId: "personal", starred: true, query: "from:alice@example.com" }) { totalCount } }'
+```
 
 `mail-gateway-reader` remains read-only and rejects `sendMessage` with
 `SEND_DISABLED_IN_READER`. `mail-gateway-draft` accepts the same GraphQL

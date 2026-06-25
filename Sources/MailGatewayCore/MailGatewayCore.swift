@@ -176,6 +176,7 @@ public struct MailGatewayReaderService {
     public func searchThreads(
         accountId: String,
         query: String? = nil,
+        starred: Bool = false,
         direction: ThreadSearchDirection? = nil,
         labelIds: [String]? = nil,
         receivedAfter: String? = nil,
@@ -189,6 +190,7 @@ public struct MailGatewayReaderService {
             account: account,
             credential: credential,
             query: query,
+            starred: starred,
             direction: direction,
             labelIds: labelIds,
             receivedAfter: receivedAfter,
