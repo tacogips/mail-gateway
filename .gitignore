@@ -6,6 +6,8 @@
 .swiftpm/
 dist/
 release/
+Formula/
+Casks/
 *.xcodeproj/
 *.xcworkspace/
 

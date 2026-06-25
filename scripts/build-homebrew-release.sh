@@ -3,16 +3,22 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
-product="mail-gateway"
-artifact_name="mail-gateway"
+products=(
+  "mail-gateway-reader"
+  "mail-gateway-draft"
+  "mail-gateway-sender"
+)
 
 usage() {
   cat <<EOF
 Usage:
-  scripts/build-homebrew-release.sh [--dry-run] [target ...]
+  scripts/build-homebrew-release.sh [--dry-run] [product ...] [target ...]
 
 Targets:
   darwin-arm64  darwin-x64
+
+Products:
+  mail-gateway-reader  mail-gateway-draft  mail-gateway-sender
 
 Environment:
   RELEASE_VERSION       Override package version used in archive names.
@@ -25,8 +31,9 @@ Examples:
   scripts/build-homebrew-release.sh
   scripts/build-homebrew-release.sh --dry-run darwin-arm64 darwin-x64
   scripts/build-homebrew-release.sh darwin-arm64 darwin-x64
+  scripts/build-homebrew-release.sh mail-gateway-reader darwin-arm64 darwin-x64
 
-This builder stages Swift macOS archives for a Homebrew formula. It does not
+This builder stages Swift macOS archives for Homebrew formulae. It does not
 publish release assets, mutate a tap, render a formula, or push commits.
 EOF
 }
@@ -44,6 +51,26 @@ detect_target() {
       return 1
       ;;
   esac
+}
+
+is_product() {
+  local candidate product
+  candidate="$1"
+  for product in "${products[@]}"; do
+    if [[ "$candidate" == "$product" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+validate_product() {
+  if ! is_product "$1"; then
+    printf 'unsupported Swift Homebrew product: %s\n' "$1" >&2
+    printf 'supported products: %s\n' "${products[*]}" >&2
+    usage >&2
+    return 1
+  fi
 }
 
 validate_target() {
@@ -155,8 +182,9 @@ swift_bin() {
 }
 
 swift_release_bin_path() {
-  local target swift_exe developer_dir sdkroot triple
-  target="$1"
+  local product target swift_exe developer_dir sdkroot triple
+  product="$1"
+  target="$2"
   swift_exe="$(swift_bin)"
   developer_dir="${SWIFT_DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
   sdkroot="${SWIFT_SDKROOT:-/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk}"
@@ -172,12 +200,13 @@ swift_release_bin_path() {
 }
 
 print_plan() {
-  local version target release_dir work_dir archive binary triple
-  version="$1"
-  target="$2"
-  release_dir="$3"
-  work_dir="$release_dir/work/$artifact_name-$version-$target"
-  archive="$release_dir/$artifact_name-$version-$target.tar.gz"
+  local product version target release_dir work_dir archive binary triple
+  product="$1"
+  version="$2"
+  target="$3"
+  release_dir="$4"
+  work_dir="$release_dir/work/$product-$version-$target"
+  archive="$release_dir/$product-$version-$target.tar.gz"
   binary="$work_dir/bin/$product"
   triple="$(swift_triple_for_target "$target")"
 
@@ -196,12 +225,13 @@ print_plan() {
 }
 
 build_target() {
-  local version target release_dir bin_path work_dir archive binary
-  version="$1"
-  target="$2"
-  release_dir="$3"
-  work_dir="$release_dir/work/$artifact_name-$version-$target"
-  archive="$release_dir/$artifact_name-$version-$target.tar.gz"
+  local product version target release_dir bin_path work_dir archive binary
+  product="$1"
+  version="$2"
+  target="$3"
+  release_dir="$4"
+  work_dir="$release_dir/work/$product-$version-$target"
+  archive="$release_dir/$product-$version-$target.tar.gz"
   binary="$work_dir/bin/$product"
 
   assert_child_path "$release_dir" "$work_dir"
@@ -210,7 +240,7 @@ build_target() {
   rm -rf "$work_dir" "$archive" "$archive.sha256"
   mkdir -p "$work_dir/bin"
 
-  bin_path="$(swift_release_bin_path "$target" | tail -n 1)"
+  bin_path="$(swift_release_bin_path "$product" "$target" | tail -n 1)"
   cp "$bin_path/$product" "$binary"
   chmod 0755 "$binary"
   cp "$repo_root/README.md" "$work_dir/README.md"
@@ -242,25 +272,42 @@ main() {
   release_dir="$(absolute_path "${RELEASE_DIR:-dist/homebrew}")"
   validate_release_dir "$release_dir"
 
-  local -a targets
-  if [[ "$#" -eq 0 ]]; then
-    targets=("$(detect_target)")
-  else
-    targets=("$@")
-  fi
+  local -a selected_products targets
+  selected_products=()
+  targets=()
 
-  local target
-  for target in "${targets[@]}"; do
-    validate_target "$target"
-    if [[ "$dry_run" == true ]]; then
-      print_plan "$version" "$target" "$release_dir"
+  local arg
+  for arg in "$@"; do
+    if is_product "$arg"; then
+      selected_products+=("$arg")
     else
-      mkdir -p "$release_dir"
-      build_target "$version" "$target" "$release_dir"
+      validate_target "$arg"
+      targets+=("$arg")
     fi
   done
 
-  printf '\nRender a formula after all platform archives exist:\n'
+  if [[ "${#selected_products[@]}" -eq 0 ]]; then
+    selected_products=("${products[@]}")
+  fi
+
+  if [[ "${#targets[@]}" -eq 0 ]]; then
+    targets=("$(detect_target)")
+  fi
+
+  local product target
+  for product in "${selected_products[@]}"; do
+    validate_product "$product"
+    for target in "${targets[@]}"; do
+      if [[ "$dry_run" == true ]]; then
+        print_plan "$product" "$version" "$target" "$release_dir"
+      else
+        mkdir -p "$release_dir"
+        build_target "$product" "$version" "$target" "$release_dir"
+      fi
+    done
+  done
+
+  printf '\nRender formulae after all platform archives exist:\n'
   printf '  scripts/render-homebrew-formula.sh %s\n' "$version"
 }
 

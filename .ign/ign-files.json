@@ -12,9 +12,9 @@
     "AGENTS.md",
     "Package.swift",
     "README.md",
-    "Sources/AppCLI/main.swift",
-    "Sources/AppCore/Command.swift",
-    "Sources/AppCore/Version.swift",
+    "Sources/MailGatewayDraft/main.swift",
+    "Sources/MailGatewayReader/main.swift",
+    "Sources/MailGatewaySender/main.swift",
     "Taskfile.yml",
     "Tests/AppCoreTests/CommandTests.swift",
     "VERSION",
@@ -31,10 +31,7 @@
     "impl-plans/completed/.gitkeep",
     "impl-plans/templates/plan-template.md",
     "packaging/homebrew/README.md",
-    "scripts/build-homebrew-cask-release.sh",
     "scripts/build-homebrew-release.sh",
-    "scripts/release-homebrew-cask-local.sh",
-    "scripts/render-homebrew-cask.sh",
     "scripts/render-homebrew-formula.sh"
   ]
 }

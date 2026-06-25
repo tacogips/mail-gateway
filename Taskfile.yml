@@ -2,7 +2,7 @@ version: "3"
 
 vars:
   PROJECT_NAME: mail-gateway
-  EXECUTABLE_NAME: mail-gateway
+  EXECUTABLE_NAME: mail-gateway-reader
   TAP_DIR: ../homebrew-tap
 
 tasks:
@@ -42,12 +42,12 @@ tasks:
       - scripts/build-homebrew-release.sh {{.CLI_ARGS}}
 
   homebrew:formula:
-    desc: Render Formula/mail-gateway.rb from dist/homebrew checksums
+    desc: Render split Formula/*.rb files from dist/homebrew checksums
     cmds:
       - scripts/render-homebrew-formula.sh {{.CLI_ARGS}}
 
   homebrew:tap-formula:
-    desc: Render the formula into the default sibling Homebrew tap checkout
+    desc: Render split formulae into the default sibling Homebrew tap checkout
     cmds:
       - |
         set -euo pipefail
@@ -55,30 +55,4 @@ tasks:
           echo "usage: task homebrew:tap-formula -- <version>" >&2
           exit 2
         fi
-        scripts/render-homebrew-formula.sh "{{.CLI_ARGS}}" "{{.TAP_DIR}}/Formula/mail-gateway.rb"
-
-  build:homebrew-cask:
-    desc: Build signed and notarized Homebrew Cask DMGs, or pass targets after --
-    cmds:
-      - scripts/build-homebrew-cask-release.sh {{.CLI_ARGS}}
-
-  homebrew:cask:
-    desc: Render Casks/mail-gateway.rb from dist/homebrew-cask checksums
-    cmds:
-      - scripts/render-homebrew-cask.sh {{.CLI_ARGS}}
-
-  homebrew:tap-cask:
-    desc: Render the cask into the default sibling Homebrew tap checkout
-    cmds:
-      - |
-        set -euo pipefail
-        if [ -z "{{.CLI_ARGS}}" ]; then
-          echo "usage: task homebrew:tap-cask -- <version>" >&2
-          exit 2
-        fi
-        scripts/render-homebrew-cask.sh "{{.CLI_ARGS}}" "{{.TAP_DIR}}/Casks/mail-gateway.rb"
-
-  release:homebrew-cask-local:
-    desc: Build, notarize, upload, and render the sibling tap cask for a v<version> tag
-    cmds:
-      - scripts/release-homebrew-cask-local.sh {{.CLI_ARGS}}
+        scripts/render-homebrew-formula.sh "{{.CLI_ARGS}}" "{{.TAP_DIR}}/Formula"

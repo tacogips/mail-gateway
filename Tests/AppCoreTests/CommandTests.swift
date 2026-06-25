@@ -1,24 +1,20 @@
 import Testing
-@testable import AppCore
+@testable import MailGatewayCore
 
-@Test func commandReportsVersion() throws {
-  let command = AppCommand(arguments: ["--version"])
-  #expect(try command.run() == Version.current)
+@Test func readerHelpUsesReaderExecutableName() {
+    let result = MailGatewayCLI().run(arguments: ["--help"], environment: [:])
+    #expect(result.exitCode == MailGatewayExitCode.success.rawValue)
+    #expect(result.stdout.contains("mail-gateway-reader"))
 }
 
-@Test func commandReportsUsage() throws {
-  let command = AppCommand(arguments: ["--help"])
-  #expect(try command.run().contains("Usage: mail-gateway"))
+@Test func draftHelpUsesDraftExecutableName() {
+    let result = MailGatewayCLI(mode: .draftGateway).run(arguments: ["--help"], environment: [:])
+    #expect(result.exitCode == MailGatewayExitCode.success.rawValue)
+    #expect(result.stdout.contains("mail-gateway-draft"))
 }
 
-@Test func commandRejectsUnknownFlags() throws {
-  let command = AppCommand(arguments: ["--unknown"])
-  do {
-    _ = try command.run()
-    Issue.record("Expected an unknown argument error")
-  } catch AppCommand.Error.unknownArgument(let argument) {
-    #expect(argument == "--unknown")
-  } catch {
-    Issue.record("Unexpected error: \(error)")
-  }
+@Test func senderHelpUsesSenderExecutableName() {
+    let result = MailGatewayCLI(mode: .directSender).run(arguments: ["--help"], environment: [:])
+    #expect(result.exitCode == MailGatewayExitCode.success.rawValue)
+    #expect(result.stdout.contains("mail-gateway-sender"))
 }

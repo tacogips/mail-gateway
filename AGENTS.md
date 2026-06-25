@@ -32,7 +32,7 @@ This is `mail-gateway`, a Swift Package Manager project with a Nix development s
 task build
 task test
 task lint
-swift run mail-gateway --help
+swift run mail-gateway-reader --help
 ```
 
 ## Swift Code Development

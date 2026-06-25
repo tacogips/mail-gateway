@@ -8,18 +8,34 @@ let package = Package(
     .macOS(.v14)
   ],
   products: [
-    .library(name: "AppCore", targets: ["AppCore"]),
-    .executable(name: "mail-gateway", targets: ["AppCLI"])
+    .library(name: "MailGatewayCore", targets: ["MailGatewayCore"]),
+    .executable(name: "mail-gateway-reader", targets: ["MailGatewayReader"]),
+    .executable(name: "mail-gateway-draft", targets: ["MailGatewayDraft"]),
+    .executable(name: "mail-gateway-sender", targets: ["MailGatewaySender"]),
+    .executable(name: "mail-gateway-swift-smoke-tests", targets: ["MailGatewaySwiftSmokeTests"])
   ],
   targets: [
-    .target(name: "AppCore"),
+    .target(name: "MailGatewayCore"),
     .executableTarget(
-      name: "AppCLI",
-      dependencies: ["AppCore"]
+      name: "MailGatewayReader",
+      dependencies: ["MailGatewayCore"]
+    ),
+    .executableTarget(
+      name: "MailGatewayDraft",
+      dependencies: ["MailGatewayCore"]
+    ),
+    .executableTarget(
+      name: "MailGatewaySender",
+      dependencies: ["MailGatewayCore"]
+    ),
+    .executableTarget(
+      name: "MailGatewaySwiftSmokeTests",
+      dependencies: ["MailGatewayCore"]
     ),
     .testTarget(
-      name: "AppCoreTests",
-      dependencies: ["AppCore"]
+      name: "MailGatewayCoreTests",
+      dependencies: ["MailGatewayCore"],
+      path: "Tests/AppCoreTests"
     )
   ],
   swiftLanguageModes: [.v6]
