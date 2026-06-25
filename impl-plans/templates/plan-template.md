@@ -1,81 +1,26 @@
-# <Feature Name> Implementation Plan
+# <Feature Name>
 
-**Status**: Planning | Ready | In Progress | Completed
-**Design Reference**: design-docs/<file>.md#<section>
-**Created**: YYYY-MM-DD
-**Last Updated**: YYYY-MM-DD
+**Status**: In Progress
+**Design Reference**: `design-docs/specs/<file>.md#<section>`
 
----
+## Purpose
 
-## Design Document Reference
+Describe the goal and the user-visible problem this plan solves.
 
-**Source**: design-docs/<file>.md
+## Deliverables
 
-### Summary
-Brief description of the feature being implemented.
+- [ ] File or behavior change
 
-### Scope
-**Included**: What is being implemented
-**Excluded**: What is NOT part of this implementation
+## Tasks
 
----
+### TASK-001: <Task>
 
-## Modules
+**Parallelizable**: Yes
 
-### 1. <Module Category>
+**Completion Criteria**:
 
-#### src/path/to/file.ts
-
-**Status**: NOT_STARTED
-
-```typescript
-interface Example {
-    method(param: string): Promise<void>;
-}
-
-interface ExampleConfig {
-    // configuration fields
-}
-
-type ExampleStatus = 'pending' | 'running' | 'completed' | 'failed';
-```
-
-**Checklist**:
-- [ ] Define Example interface
-- [ ] Define ExampleConfig interface
-- [ ] Export from index.ts
-- [ ] Unit tests
-
----
-
-## Module Status
-
-| Module | File Path | Status | Tests |
-|--------|-----------|--------|-------|
-| Example interface | `src/path/to/file.ts` | NOT_STARTED | - |
-
-## Dependencies
-
-| Feature | Depends On | Status |
-|---------|------------|--------|
-| This feature | Foundation layer | Available |
-
-## Completion Criteria
-
-- [ ] All modules implemented
-- [ ] All tests passing
-- [ ] Type checking passes
+- [ ] Criteria
 
 ## Progress Log
 
-### Session: YYYY-MM-DD HH:MM
-**Tasks Completed**: None yet
-**Tasks In Progress**: Starting implementation
-**Blockers**: None
-**Notes**: Initial session
-
-## Related Plans
-
-- **Previous**: (if split from larger plan)
-- **Next**: (if continued in another plan)
-- **Depends On**: (other plan files this depends on)
+- YYYY-MM-DD: Plan created.

@@ -1,43 +1,34 @@
-# Swift Package Manager
+# This .gitignore file is expanded to the directory where `ign checkout` is executed.
+# It is NOT for the ign-template repository itself.
+
+# Swift build artifacts
 .build/
-Package.resolved
-
-# Release artifacts
+.swiftpm/
+dist/
 release/
+*.xcodeproj/
+*.xcworkspace/
 
-# Environment files
-.env
-.env.local
-.env.*.local
+# Nix and local environment files
+.pre-commit-config.yaml
+result
+result-*
+**/.direnv
+**/.env
+**/.envrc.private*
+**/*.private*
 
-# IDE
+# IDE and OS metadata
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
-Thumbs.db
 
-# Nix
-.direnv/
-result
-result-*
-
-# Logs
-logs/
-*.log
-
-# Temporary files
+# Temporary files and logs
 tmp/
 temp/
 .cache/
-
-# Implementation progress lock file
-impl-plans/.progress.lock
-
-# Private files
-**/.envrc.private*
-.private*/
+logs/
+*.log

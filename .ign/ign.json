@@ -1,15 +1,15 @@
 {
   "template": {
-    "url": "https://github.com/tacogips/ign-template/bun-ts-v1",
-    "path": "bun-ts-v1",
+    "url": "https://github.com/tacogips/ign-template/swift-v1",
+    "path": "swift-v1",
     "ref": "main"
   },
-  "hash": "0d3df4e1b29a3409d546c50ed70aa41d8623b79f24b83ccb370f1b48c6863450",
+  "hash": "d19207b9d27f4351c74b8fb80c2427dea53986fac39d6dae098b81e0fd740464",
   "metadata": {
-    "generated_at": "2026-03-13T13:22:33.025230878+09:00",
+    "generated_at": "2026-06-25T20:09:55.121384+09:00",
     "generated_by": "ign checkout",
-    "template_name": "bun-ts-v1",
+    "template_name": "swift-v1",
     "template_version": "1.0.0",
-    "ign_version": "0.1.13"
+    "ign_version": "0.1.17"
   }
 }

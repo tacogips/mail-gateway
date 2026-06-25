@@ -1,9 +1,9 @@
-version: '3'
+version: "3"
 
 vars:
   PROJECT_NAME: mail-gateway
-  VERSION:
-    sh: git describe --tags --always --dirty 2>/dev/null || echo 0.1.0
+  EXECUTABLE_NAME: mail-gateway
+  TAP_DIR: ../homebrew-tap
 
 tasks:
   default:
@@ -12,128 +12,73 @@ tasks:
       - task --list
 
   build:
-    desc: Build all Swift products
+    desc: Build the Swift package
     cmds:
-      - swift build -c release
+      - swift build
 
-  build-reader:
-    desc: Build the Swift reader command product
+  run:
+    desc: Run the executable
     cmds:
-      - swift build -c release --product mail-gateway-reader
-
-  build-draft:
-    desc: Build the default draft gateway command product
-    cmds:
-      - swift build -c release --product mail-gateway-draft
-
-  build-sender:
-    desc: Build the explicit sender command product
-    cmds:
-      - swift build -c release --product mail-gateway-sender
+      - swift run {{.EXECUTABLE_NAME}} {{.CLI_ARGS}}
 
   test:
-    desc: Run Swift smoke tests
+    desc: Run Swift tests
     cmds:
-      - swift run mail-gateway-swift-smoke-tests
-
-  ci:
-    desc: Run Swift verification
-    cmds:
-      - task: build
-      - task: test
+      - swift test
 
   clean:
-    desc: Clean build and release artifacts
+    desc: Clean SwiftPM and release artifacts
     cmds:
-      - rm -rf .build release
+      - rm -rf .build dist release
 
-  install-reader:
-    desc: Install the Swift reader command
-    vars:
-      INSTALL_PREFIX: '{{default "/usr/local" .PREFIX}}'
+  lint:
+    desc: Run SwiftLint when available
     cmds:
-      - swift build -c release --product mail-gateway-reader
-      - mkdir -p "{{.INSTALL_PREFIX}}/bin"
-      - install .build/release/mail-gateway-reader "{{.INSTALL_PREFIX}}/bin/mail-gateway-reader"
+      - swiftlint
 
-  install:
-    desc: Install all Swift command products
-    vars:
-      INSTALL_PREFIX: '{{default "/usr/local" .PREFIX}}'
+  build:homebrew:
+    desc: Build standalone Homebrew formula archives for the current platform, or pass targets after --
     cmds:
-      - swift build -c release --product mail-gateway-reader
-      - swift build -c release --product mail-gateway-draft
-      - swift build -c release --product mail-gateway-sender
-      - mkdir -p "{{.INSTALL_PREFIX}}/bin"
-      - install .build/release/mail-gateway-reader "{{.INSTALL_PREFIX}}/bin/mail-gateway-reader"
-      - install .build/release/mail-gateway-draft "{{.INSTALL_PREFIX}}/bin/mail-gateway-draft"
-      - install .build/release/mail-gateway-sender "{{.INSTALL_PREFIX}}/bin/mail-gateway-sender"
+      - scripts/build-homebrew-release.sh {{.CLI_ARGS}}
 
-  release:clean:
-    desc: Clean release artifacts
+  homebrew:formula:
+    desc: Render Formula/mail-gateway.rb from dist/homebrew checksums
     cmds:
-      - rm -rf release
+      - scripts/render-homebrew-formula.sh {{.CLI_ARGS}}
 
-  release:prepare:
-    desc: Run verification before release packaging
+  homebrew:tap-formula:
+    desc: Render the formula into the default sibling Homebrew tap checkout
     cmds:
-      - task: ci
-
-  release:binary:
-    desc: Build a local Swift binary archive
-    vars:
-      RELEASE_DIR: 'release/{{.PROJECT_NAME}}-{{.VERSION}}'
-    cmds:
-      - task: release:prepare
-      - mkdir -p {{.RELEASE_DIR}}/bin
-      - install .build/release/mail-gateway-reader {{.RELEASE_DIR}}/bin/mail-gateway-reader
-      - install .build/release/mail-gateway-draft {{.RELEASE_DIR}}/bin/mail-gateway-draft
-      - install .build/release/mail-gateway-sender {{.RELEASE_DIR}}/bin/mail-gateway-sender
-      - cd release && tar -czf {{.PROJECT_NAME}}-{{.VERSION}}.tar.gz $(basename {{.RELEASE_DIR}})
-      - echo "Built release/{{.PROJECT_NAME}}-{{.VERSION}}.tar.gz"
-
-  release:checksums:
-    desc: Generate SHA256 checksums for release assets
-    cmds:
-      - test -d release
-      - cd release && shasum -a 256 *.tar.gz > SHA256SUMS.txt
-      - echo "Wrote release/SHA256SUMS.txt"
-
-  release:nix:
-    desc: Validate Nix flake for release
-    cmds:
-      - nix flake check
-
-  release:all:
-    desc: Build all local release artifacts
-    cmds:
-      - task: release:clean
-      - task: release:binary
-      - task: release:checksums
-
-  release:github:
-    desc: Publish release assets to GitHub Release
-    vars:
-      TAG: 'v{{.VERSION}}'
-    cmds:
-      - gh auth status
-      - task: release:nix
-      - task: release:all
       - |
-        if git rev-parse "{{.TAG}}" >/dev/null 2>&1; then
-          echo "Tag {{.TAG}} already exists"
-        else
-          git tag -a "{{.TAG}}" -m "Release {{.TAG}}"
-          git push origin "{{.TAG}}"
-          echo "Created and pushed tag {{.TAG}}"
+        set -euo pipefail
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "usage: task homebrew:tap-formula -- <version>" >&2
+          exit 2
         fi
-      - |
-        gh release view "{{.TAG}}" >/dev/null 2>&1 || \
-          gh release create "{{.TAG}}" --title "{{.PROJECT_NAME}} {{.TAG}}" --generate-notes
-      - gh release upload "{{.TAG}}" release/* --clobber
-      - echo "Published GitHub release {{.TAG}}"
+        scripts/render-homebrew-formula.sh "{{.CLI_ARGS}}" "{{.TAP_DIR}}/Formula/mail-gateway.rb"
 
-  release:
-    desc: Full Swift release
+  build:homebrew-cask:
+    desc: Build signed and notarized Homebrew Cask DMGs, or pass targets after --
     cmds:
-      - task: release:github
+      - scripts/build-homebrew-cask-release.sh {{.CLI_ARGS}}
+
+  homebrew:cask:
+    desc: Render Casks/mail-gateway.rb from dist/homebrew-cask checksums
+    cmds:
+      - scripts/render-homebrew-cask.sh {{.CLI_ARGS}}
+
+  homebrew:tap-cask:
+    desc: Render the cask into the default sibling Homebrew tap checkout
+    cmds:
+      - |
+        set -euo pipefail
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "usage: task homebrew:tap-cask -- <version>" >&2
+          exit 2
+        fi
+        scripts/render-homebrew-cask.sh "{{.CLI_ARGS}}" "{{.TAP_DIR}}/Casks/mail-gateway.rb"
+
+  release:homebrew-cask-local:
+    desc: Build, notarize, upload, and render the sibling tap cask for a v<version> tag
+    cmds:
+      - scripts/release-homebrew-cask-local.sh {{.CLI_ARGS}}

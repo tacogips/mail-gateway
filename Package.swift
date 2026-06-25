@@ -1,53 +1,26 @@
-// swift-tools-version: 5.8
+// swift-tools-version: 6.0
 
 import PackageDescription
 
 let package = Package(
-    name: "mail-gateway",
-    platforms: [
-        .macOS(.v13)
-    ],
-    products: [
-        .library(
-            name: "MailGatewayCore",
-            targets: ["MailGatewayCore"]
-        ),
-        .executable(
-            name: "mail-gateway-reader",
-            targets: ["MailGatewayReader"]
-        ),
-        .executable(
-            name: "mail-gateway-draft",
-            targets: ["MailGatewayDraft"]
-        ),
-        .executable(
-            name: "mail-gateway-sender",
-            targets: ["MailGatewaySender"]
-        ),
-        .executable(
-            name: "mail-gateway-swift-smoke-tests",
-            targets: ["MailGatewaySwiftSmokeTests"]
-        )
-    ],
-    targets: [
-        .target(
-            name: "MailGatewayCore"
-        ),
-        .executableTarget(
-            name: "MailGatewayReader",
-            dependencies: ["MailGatewayCore"]
-        ),
-        .executableTarget(
-            name: "MailGatewayDraft",
-            dependencies: ["MailGatewayCore"]
-        ),
-        .executableTarget(
-            name: "MailGatewaySender",
-            dependencies: ["MailGatewayCore"]
-        ),
-        .executableTarget(
-            name: "MailGatewaySwiftSmokeTests",
-            dependencies: ["MailGatewayCore"]
-        )
-    ]
+  name: "mail-gateway",
+  platforms: [
+    .macOS(.v14)
+  ],
+  products: [
+    .library(name: "AppCore", targets: ["AppCore"]),
+    .executable(name: "mail-gateway", targets: ["AppCLI"])
+  ],
+  targets: [
+    .target(name: "AppCore"),
+    .executableTarget(
+      name: "AppCLI",
+      dependencies: ["AppCore"]
+    ),
+    .testTarget(
+      name: "AppCoreTests",
+      dependencies: ["AppCore"]
+    )
+  ],
+  swiftLanguageModes: [.v6]
 )
