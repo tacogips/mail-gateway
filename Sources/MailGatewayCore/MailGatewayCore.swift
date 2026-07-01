@@ -97,6 +97,7 @@ public enum AttachmentMaterializationState: String, Codable, Equatable, Sendable
 }
 
 public enum MessageMaterializedFileKind: String, Codable, Equatable, Sendable {
+    case attachment = "ATTACHMENT"
     case bodyText = "BODY_TEXT"
     case bodyHTML = "BODY_HTML"
     case temporaryFile = "TEMPORARY_FILE"
@@ -219,17 +220,37 @@ public struct MailGatewayReaderService {
             .appendingPathComponent(messageId, isDirectory: true)
             .path
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: attachmentDirectory)) ?? []
-        if let matchingEntry = entries.first(where: { $0.hasPrefix("\(attachmentId)-") }) {
+        var cachedPrefixes: [String] = []
+        for prefix in [
+            "\(attachmentId)-",
+            "\(sanitizedPathComponent(attachmentId))-",
+            attachmentStorageFilenamePrefix(attachmentId: attachmentId)
+        ] where !cachedPrefixes.contains(prefix) {
+            cachedPrefixes.append(prefix)
+        }
+        if let matchingEntry = entries.first(where: { entry in
+            cachedPrefixes.contains { entry.hasPrefix($0) }
+        }) {
             let localPath = normalizedPath(URL(fileURLWithPath: attachmentDirectory)
                 .appendingPathComponent(matchingEntry)
                 .path)
-            let filename = String(matchingEntry.dropFirst("\(attachmentId)-".count))
+            let matchedPrefix = cachedPrefixes.first { matchingEntry.hasPrefix($0) } ?? ""
+            let filename = String(matchingEntry.dropFirst(matchedPrefix.count))
             return [
                 "id": attachmentId,
+                "accountId": accountId,
+                "messageId": messageId,
                 "filename": filename.isEmpty ? NSNull() : filename as Any,
                 "mimeType": "application/octet-stream",
                 "sizeBytes": NSNull(),
                 "localPath": localPath,
+                "downloadKey": attachmentDownloadKey(
+                    accountId: accountId,
+                    messageId: messageId,
+                    attachmentId: attachmentId,
+                    filename: filename,
+                    mimeType: "application/octet-stream"
+                ) as Any? ?? NSNull(),
                 "materializationState": AttachmentMaterializationState.cached.rawValue
             ]
         }

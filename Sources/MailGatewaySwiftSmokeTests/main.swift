@@ -35,6 +35,7 @@ func runSmokeTests() throws {
     try testAttachmentLookup(cleanup: &cleanup)
     try testMissingAttachmentLookup(cleanup: &cleanup)
     try testMessageFileDownload(cleanup: &cleanup)
+    try testRemoteAttachmentDownload(cleanup: &cleanup)
     try testMissingAccountGraphQLError(cleanup: &cleanup)
     try testAccountCachePrune(cleanup: &cleanup)
     try testInvalidCachePruneOptions(cleanup: &cleanup)
@@ -530,7 +531,7 @@ func testAttachmentLookup(cleanup: inout [String]) throws {
         "--config", fixture.configPath,
         "--query", """
         { attachment(accountId: "personal", messageId: "message-1", attachmentId: "attachment-1") \
-        { id filename localPath materializationState } }
+        { id filename localPath downloadKey materializationState } }
         """
     ])
     try assert(result.exitCode == 0, "attachment GraphQL query should succeed")
@@ -541,6 +542,18 @@ func testAttachmentLookup(cleanup: inout [String]) throws {
     try assert(
         containsEither(result.stdout, #""materializationState":"CACHED""#, #""materializationState" : "CACHED""#),
         "attachment state should be cached"
+    )
+    let output = try decodeObject(result.stdout)
+    let data = output["data"] as? [String: Any]
+    let attachment = data?["attachment"] as? [String: Any]
+    guard let downloadKey = attachment?["downloadKey"] as? String else {
+        throw SmokeTestFailure.assertionFailed("cached attachment should include a download key")
+    }
+    try assertDownloadedFile(
+        downloadKey: downloadKey,
+        fixture: fixture,
+        expectedKind: "ATTACHMENT",
+        expectedContents: "payload"
     )
 
     let stringLiteralFieldNamePath = URL(fileURLWithPath: messageDir)

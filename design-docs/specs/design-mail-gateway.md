@@ -292,6 +292,7 @@ type MailMessageFile {
 }
 
 enum MessageMaterializedFileKind {
+  ATTACHMENT
   BODY_TEXT
   BODY_HTML
   TEMPORARY_FILE
@@ -394,7 +395,10 @@ The shared input fields are:
   `<account_id>/<message_id>/` under the requested output directory to avoid
   filename collisions
 - non-inline attachments are written under `storage.attachment_dir`
-- the path format is deterministic and collision-safe: `<attachment_dir>/<account_id>/<message_id>/<attachment_id>-<sanitized_filename>`
+- the path format is deterministic and collision-safe:
+  `<attachment_dir>/<account_id>/<message_id>/<attachment_id>-<sanitized_filename>`,
+  with a hashed, length-bounded attachment-id prefix when provider ids exceed
+  filesystem filename limits
 - if the file already exists and its metadata matches, the cached path is reused
 - materialization is idempotent from the API caller perspective
 - materialized files persist until explicit cleanup through `cache prune`

@@ -320,9 +320,10 @@ Write behavior:
 \(writeNote)
 
 File downloads:
-  GraphQL returns file metadata and vendor-neutral downloadKey values, not file
-  payloads. Use file download when a caller explicitly needs selected file
-  bytes. Repeat --key to download multiple selected files in one command.
+  GraphQL returns attachment, body, and temporary-file metadata with
+  vendor-neutral downloadKey values, not file payloads. Use file download when
+  a caller explicitly needs selected file bytes. Repeat --key to download
+  multiple selected files in one command.
 
   Single-key downloads return a single file JSON object with localPath.
   Multi-key downloads return {"fileCount": n, "files": [...]} and copy files

@@ -140,7 +140,40 @@ struct GmailLiveReader {
            let remoteSize {
             resolved["sizeBytes"] = remoteSize
         }
+        resolved["downloadKey"] = attachmentDownloadKey(
+            accountId: account.id,
+            messageId: messageId,
+            attachmentId: attachmentId,
+            filename: resolved["filename"] as? String,
+            mimeType: resolved["mimeType"] as? String
+        ) as Any? ?? NSNull()
         return resolved
+    }
+
+    func getAttachmentPayload(
+        credential: CredentialConfig,
+        messageId: String,
+        attachmentId: String
+    ) throws -> Data {
+        let accessToken = try validGmailAccessToken(credential: credential, use: .read)
+        var components = gmailURLComponents(
+            path: "/gmail/v1/users/me/messages/\(urlPathEncode(messageId))/attachments/\(urlPathEncode(attachmentId))"
+        )
+        components.queryItems = nil
+        let object = try getGmailJSONObject(
+            components: components,
+            accessToken: accessToken,
+            context: "Gmail attachment retrieval failed"
+        )
+        guard let encoded = nonBlank(object["data"] as? String),
+              let data = dataFromBase64URLString(encoded) else {
+            throw MailGatewayError(
+                "Gmail attachment response did not include decodable payload data",
+                code: .providerApiError,
+                exitCode: .providerApiError
+            )
+        }
+        return data
     }
 }
 
@@ -417,17 +450,25 @@ private func parseGmailPayloadPart(_ payload: [String: Any], parsed: inout Gmail
 }
 
 private func buildAttachment(account: AccountConfig, message: [String: Any], part: GmailAttachmentPart) -> [String: Any] {
-    [
+    let messageId = message["id"] as? String ?? ""
+    return [
         "id": part.id,
         "filename": part.filename as Any? ?? NSNull(),
         "mimeType": part.mimeType,
         "sizeBytes": part.sizeBytes as Any? ?? NSNull(),
         "localPath": NSNull(),
+        "downloadKey": attachmentDownloadKey(
+            accountId: account.id,
+            messageId: messageId,
+            attachmentId: part.attachmentId,
+            filename: part.filename,
+            mimeType: part.mimeType
+        ) as Any? ?? NSNull(),
         "materializationState": AttachmentMaterializationState.notMaterialized.rawValue,
         "providerMetadata": [
             "gmail": [
                 "accountId": account.id,
-                "messageId": message["id"] as? String ?? "",
+                "messageId": messageId,
                 "threadId": message["threadId"] as? String ?? "",
                 "attachmentId": part.attachmentId as Any? ?? NSNull(),
                 "partId": part.partId as Any? ?? NSNull()

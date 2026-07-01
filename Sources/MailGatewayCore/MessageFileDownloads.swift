@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct MessageFileDownloadKey {
@@ -5,6 +6,8 @@ struct MessageFileDownloadKey {
     let messageId: String
     let kind: MessageMaterializedFileKind
     let filename: String
+    let attachmentId: String?
+    let mimeType: String?
 }
 
 private struct MessageFileMetadataInput {
@@ -55,7 +58,7 @@ extension MailGatewayReaderService {
         layout: MessageFileDownloadLayout
     ) throws -> [String: Any] {
         _ = try requireAccount(key.accountId)
-        let sourceURL = messageFileURL(for: key)
+        let sourceURL = try materializedFileURL(for: key)
         guard FileManager.default.isReadableFile(atPath: sourceURL.path) else {
             throw MailGatewayError(
                 "Message file is not materialized locally",
@@ -78,7 +81,7 @@ extension MailGatewayReaderService {
                 kind: key.kind,
                 url: outputURL,
                 filename: key.filename,
-                mimeType: mimeType(for: key.kind)
+                mimeType: key.mimeType ?? mimeType(for: key.kind)
             ),
             includeDownloadKey: false
         )
@@ -226,7 +229,9 @@ extension MailGatewayReaderService {
                 accountId: input.accountId,
                 messageId: input.messageId,
                 kind: input.kind,
-                filename: input.filename
+                filename: input.filename,
+                attachmentId: nil,
+                mimeType: input.mimeType
             ))
         } else {
             metadata["localPath"] = normalizedPath(input.url.path)
@@ -237,6 +242,11 @@ extension MailGatewayReaderService {
     private func messageFileURL(for key: MessageFileDownloadKey) -> URL {
         let directory = messageDirectory(accountId: key.accountId, messageId: key.messageId)
         switch key.kind {
+        case .attachment:
+            return directory.appendingPathComponent(attachmentStorageFilename(
+                attachmentId: key.attachmentId ?? key.filename,
+                filename: key.filename
+            ))
         case .bodyText:
             return directory.appendingPathComponent("body.txt")
         case .bodyHTML:
@@ -265,6 +275,8 @@ extension MailGatewayReaderService {
 
     private func mimeType(for kind: MessageMaterializedFileKind) -> String {
         switch kind {
+        case .attachment:
+            return "application/octet-stream"
         case .bodyText:
             return "text/plain"
         case .bodyHTML:
@@ -273,16 +285,66 @@ extension MailGatewayReaderService {
             return "application/octet-stream"
         }
     }
+
+    private func materializedFileURL(for key: MessageFileDownloadKey) throws -> URL {
+        guard key.kind == .attachment else {
+            return messageFileURL(for: key)
+        }
+        let cachedURL = messageFileURL(for: key)
+        if FileManager.default.isReadableFile(atPath: cachedURL.path) {
+            return cachedURL
+        }
+        guard let attachmentId = nonBlank(key.attachmentId) else {
+            throw MailGatewayError(
+                "Attachment download keys require an attachmentId",
+                code: .invalidArgument,
+                exitCode: .invalidCliUsage
+            )
+        }
+        let account = try requireAccount(key.accountId)
+        let credential = try requireCredential(account.credentialId)
+        let payload = try GmailLiveReader().getAttachmentPayload(
+            credential: credential,
+            messageId: key.messageId,
+            attachmentId: attachmentId
+        )
+        do {
+            try FileManager.default.createDirectory(
+                at: cachedURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try payload.write(to: cachedURL, options: [.atomic])
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cachedURL.path)
+        } catch {
+            throw MailGatewayError(
+                "Failed to materialize Gmail attachment",
+                code: .configInvalid,
+                exitCode: .configurationError,
+                details: [
+                    "path": normalizedPath(cachedURL.path),
+                    "cause": error.localizedDescription
+                ]
+            )
+        }
+        return cachedURL
+    }
 }
 
 func encodeMessageFileDownloadKey(_ key: MessageFileDownloadKey) -> String {
-    let payload: [String: Any] = [
+    var payload: [String: Any] = [
         "v": 1,
         "accountId": key.accountId,
         "messageId": key.messageId,
         "kind": key.kind.rawValue,
         "filename": key.filename
     ]
+    if let attachmentId = nonBlank(key.attachmentId) {
+        payload["attachmentId"] = attachmentId
+    }
+    if let mimeType = nonBlank(key.mimeType) {
+        payload["mimeType"] = mimeType
+    }
     guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
         return ""
     }
@@ -306,10 +368,92 @@ func decodeMessageFileDownloadKey(_ rawKey: String) throws -> MessageFileDownloa
             exitCode: .invalidCliUsage
         )
     }
+    let attachmentId = nonBlank(object["attachmentId"] as? String)
+    if kind == .attachment && attachmentId == nil {
+        throw MailGatewayError(
+            "Attachment download keys require an attachmentId",
+            code: .invalidArgument,
+            exitCode: .invalidCliUsage
+        )
+    }
     return MessageFileDownloadKey(
         accountId: accountId,
         messageId: messageId,
         kind: kind,
-        filename: sanitizedFilename(filename)
+        filename: sanitizedFilename(filename),
+        attachmentId: attachmentId,
+        mimeType: nonBlank(object["mimeType"] as? String)
     )
+}
+
+func attachmentDownloadKey(
+    accountId: String,
+    messageId: String,
+    attachmentId: String?,
+    filename: String?,
+    mimeType: String?
+) -> String? {
+    guard let attachmentId = nonBlank(attachmentId) else {
+        return nil
+    }
+    let resolvedFilename = nonBlank(filename) ?? "attachment-\(sanitizedPathComponent(attachmentId))"
+    return encodeMessageFileDownloadKey(MessageFileDownloadKey(
+        accountId: accountId,
+        messageId: messageId,
+        kind: .attachment,
+        filename: resolvedFilename,
+        attachmentId: attachmentId,
+        mimeType: mimeType
+    ))
+}
+
+private func attachmentStorageFilename(attachmentId: String, filename: String) -> String {
+    let idComponent = sanitizedPathComponent(attachmentId)
+    let filenameComponent = sanitizedFilename(filename)
+    let preferred = "\(idComponent)-\(filenameComponent)"
+    guard preferred.utf8.count > 200 else {
+        return preferred
+    }
+    let digest = SHA256.hash(data: Data(attachmentId.utf8))
+        .map { String(format: "%02x", $0) }
+        .joined()
+    let fixedPrefix = attachmentStorageFilenamePrefix(attachmentId: attachmentId, digest: digest)
+    return fixedPrefix + utf8FilenameSuffix(filenameComponent, maxBytes: max(20, 200 - fixedPrefix.utf8.count))
+}
+
+func attachmentStorageFilenamePrefix(attachmentId: String) -> String {
+    let digest = SHA256.hash(data: Data(attachmentId.utf8))
+        .map { String(format: "%02x", $0) }
+        .joined()
+    return attachmentStorageFilenamePrefix(attachmentId: attachmentId, digest: digest)
+}
+
+private func attachmentStorageFilenamePrefix(attachmentId: String, digest: String) -> String {
+    "\(utf8Prefix(sanitizedPathComponent(attachmentId), maxBytes: 48))-\(digest.prefix(16))-"
+}
+
+private func utf8Prefix(_ value: String, maxBytes: Int) -> String {
+    var output = ""
+    var byteCount = 0
+    for character in value {
+        let count = String(character).utf8.count
+        guard byteCount + count <= maxBytes else {
+            break
+        }
+        output.append(character)
+        byteCount += count
+    }
+    return output.isEmpty ? "item" : output
+}
+
+private func utf8FilenameSuffix(_ value: String, maxBytes: Int) -> String {
+    guard value.utf8.count > maxBytes else {
+        return value
+    }
+    let url = URL(fileURLWithPath: value)
+    let name = url.deletingPathExtension().lastPathComponent
+    let ext = url.pathExtension
+    let extensionSuffix = ext.isEmpty ? "" : ".\(ext)"
+    let nameBudget = max(1, maxBytes - extensionSuffix.utf8.count)
+    return utf8Prefix(name, maxBytes: nameBudget) + extensionSuffix
 }
