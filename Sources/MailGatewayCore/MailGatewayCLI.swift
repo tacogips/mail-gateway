@@ -198,7 +198,23 @@ public struct MailGatewayCLI {
         case "revoke":
             return success(try service.revokeAuth(credentialId: credentialId), pretty: pretty)
         case "login":
-            return success(try service.login(credentialId: credentialId), pretty: pretty)
+            return success(
+                try service.login(
+                    credentialId: credentialId,
+                    options: GmailOAuthLoginOptions(
+                        redirectURI: try getStringFlag(flags, "redirect-uri"),
+                        openBrowser: try getBooleanFlag(flags, "open-browser", defaultValue: true),
+                        timeoutSeconds: Int32(try getIntFlag(
+                            flags,
+                            "timeout-seconds",
+                            defaultValue: Int(GmailOAuthLoginOptions.defaultTimeoutSeconds),
+                            minimum: 1,
+                            maximum: 3_600
+                        ))
+                    )
+                ),
+                pretty: pretty
+            )
         default:
             throw MailGatewayError(
                 "auth requires one of: login, revoke, status",
@@ -315,6 +331,13 @@ Commands:
   auth <login|revoke|status> --credential <id>
   cache prune [--account <id>|--all]
   file download --key <download-key> [--key <download-key> ...] [--output-dir <dir>]
+
+Auth login options:
+  --redirect-uri <uri>       Optional http://127.0.0.1:<port>/<path> callback URI.
+                             Defaults to an ephemeral loopback port.
+  --open-browser <true|false>
+                             Open the authorization URL automatically. Defaults to true.
+  --timeout-seconds <n>      Seconds to wait for the OAuth2 callback. Defaults to 300.
 
 Write behavior:
 \(writeNote)

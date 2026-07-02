@@ -15,7 +15,7 @@ func parseArguments(_ arguments: [String]) throws -> ParsedArgs {
     var positionals: [String] = []
     var flags: [String: StringOrBool] = [:]
     var repeatedFlags: [String: [StringOrBool]] = [:]
-    let booleanFlags: Set<String> = ["all", "pretty"]
+    let booleanFlags: Set<String> = ["all", "open-browser", "pretty"]
     var index = 0
 
     while index < arguments.count {
@@ -93,8 +93,12 @@ func getStringFlags(_ flags: [String: [StringOrBool]], _ name: String) throws ->
 }
 
 func getBooleanFlag(_ flags: [String: StringOrBool], _ name: String) throws -> Bool {
+    try getBooleanFlag(flags, name, defaultValue: false)
+}
+
+func getBooleanFlag(_ flags: [String: StringOrBool], _ name: String, defaultValue: Bool) throws -> Bool {
     guard let value = flags[name] else {
-        return false
+        return defaultValue
     }
     switch value {
     case .bool(let value):
@@ -110,6 +114,28 @@ func getBooleanFlag(_ flags: [String: StringOrBool], _ name: String) throws -> B
             exitCode: .invalidCliUsage
         )
     }
+}
+
+func getIntFlag(
+    _ flags: [String: StringOrBool],
+    _ name: String,
+    defaultValue: Int,
+    minimum: Int,
+    maximum: Int
+) throws -> Int {
+    guard let rawValue = try getStringFlag(flags, name) else {
+        return defaultValue
+    }
+    guard let value = Int(rawValue),
+          value >= minimum,
+          value <= maximum else {
+        throw MailGatewayError(
+            "--\(name) must be an integer from \(minimum) through \(maximum)",
+            code: .invalidArgument,
+            exitCode: .invalidCliUsage
+        )
+    }
+    return value
 }
 
 func loadQuery(flags: [String: StringOrBool]) throws -> String {

@@ -301,8 +301,12 @@ public struct MailGatewayReaderService {
     }
 
     public func login(credentialId: String) throws -> [String: Any] {
+        try login(credentialId: credentialId, options: GmailOAuthLoginOptions())
+    }
+
+    func login(credentialId: String, options: GmailOAuthLoginOptions) throws -> [String: Any] {
         let credential = try requireCredential(credentialId)
-        return try GmailOAuthBootstrapper().login(credential: credential)
+        return try GmailOAuthBootstrapper().login(credential: credential, options: options)
     }
 
     public func pruneCache(accountId: String?, all: Bool) throws -> [String: Any] {

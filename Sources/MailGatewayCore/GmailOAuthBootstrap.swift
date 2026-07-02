@@ -3,10 +3,28 @@ import Darwin
 import Foundation
 import Security
 
+struct GmailOAuthLoginOptions: Sendable {
+    static let defaultTimeoutSeconds: Int32 = 300
+
+    let redirectURI: String?
+    let openBrowser: Bool
+    let timeoutSeconds: Int32
+
+    init(
+        redirectURI: String? = nil,
+        openBrowser: Bool = true,
+        timeoutSeconds: Int32 = GmailOAuthLoginOptions.defaultTimeoutSeconds
+    ) {
+        self.redirectURI = nonBlank(redirectURI)
+        self.openBrowser = openBrowser
+        self.timeoutSeconds = timeoutSeconds
+    }
+}
+
 struct GmailOAuthBootstrapper {
-    func login(credential: CredentialConfig) throws -> [String: Any] {
+    func login(credential: CredentialConfig, options: GmailOAuthLoginOptions = GmailOAuthLoginOptions()) throws -> [String: Any] {
         let client = try loadGoogleOAuthClient(credential: credential, use: .desktopLogin)
-        let receiver = try LoopbackOAuthReceiver()
+        let receiver = try LoopbackOAuthReceiver(redirectURI: options.redirectURI)
         let state = try randomURLSafeString(byteCount: 32)
         let codeVerifier = try randomURLSafeString(byteCount: 32)
         let authorizationURL = try buildAuthorizationURL(
@@ -17,8 +35,12 @@ struct GmailOAuthBootstrapper {
             codeVerifier: codeVerifier
         )
 
-        try openBrowser(authorizationURL)
-        let code = try receiver.waitForCode(expectedState: state, timeoutSeconds: 300)
+        if options.openBrowser {
+            try openBrowser(authorizationURL)
+        } else {
+            writeManualAuthorizationMessage(authorizationURL)
+        }
+        let code = try receiver.waitForCode(expectedState: state, timeoutSeconds: options.timeoutSeconds)
         let tokenResponse = try exchangeAuthorizationCode(
             client: client,
             code: code,
@@ -42,6 +64,7 @@ struct GmailOAuthBootstrapper {
             "provider": credential.provider.rawValue,
             "state": AuthState.ready.rawValue,
             "tokenStorePath": credential.tokenStorePath,
+            "redirectUri": receiver.redirectURI,
             "emailAddress": tokenStore.emailAddress as Any? ?? NSNull(),
             "expiresAt": tokenStore.expiresAt as Any? ?? NSNull(),
             "hasRefreshToken": tokenStore.refreshToken?.isEmpty == false
@@ -71,11 +94,50 @@ struct GmailOAuthTokenStore: Codable {
     let emailAddress: String?
 }
 
-private final class LoopbackOAuthReceiver {
+private struct LoopbackRedirectURI {
+    let authorizationHost: String
+    let bindHost: String
+    let port: UInt16
+    let path: String
+
+    init(_ redirectURI: String?) throws {
+        guard let redirectURI else {
+            authorizationHost = "127.0.0.1"
+            bindHost = "127.0.0.1"
+            port = 0
+            path = "/oauth2callback"
+            return
+        }
+        guard let components = URLComponents(string: redirectURI),
+              components.scheme == "http",
+              let host = components.host,
+              let explicitPort = components.port,
+              explicitPort > 0,
+              explicitPort <= 65_535 else {
+            throw authError("OAuth redirect URI must be an http:// loopback URL with an explicit port")
+        }
+        let normalizedHost = host.lowercased()
+        guard normalizedHost == "127.0.0.1" || normalizedHost == "localhost" else {
+            throw authError("OAuth redirect URI must use localhost or 127.0.0.1")
+        }
+        authorizationHost = normalizedHost
+        bindHost = "127.0.0.1"
+        port = UInt16(explicitPort)
+        path = components.path.isEmpty ? "/" : components.path
+    }
+
+    func absoluteString(boundPort: UInt16) -> String {
+        "http://\(authorizationHost):\(boundPort)\(path)"
+    }
+}
+
+final class LoopbackOAuthReceiver: @unchecked Sendable {
     let redirectURI: String
     private let socketFD: Int32
+    private let redirect: LoopbackRedirectURI
 
-    init() throws {
+    init(redirectURI: String? = nil) throws {
+        let redirect = try LoopbackRedirectURI(redirectURI)
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else {
             throw authError("Failed to create OAuth callback socket")
@@ -90,8 +152,8 @@ private final class LoopbackOAuthReceiver {
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = in_port_t(0).bigEndian
-        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        address.sin_port = in_port_t(redirect.port).bigEndian
+        address.sin_addr = in_addr(s_addr: inet_addr(redirect.bindHost))
 
         let bindResult = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
@@ -100,7 +162,7 @@ private final class LoopbackOAuthReceiver {
         }
         guard bindResult == 0 else {
             close(fd)
-            throw authError("Failed to bind OAuth callback socket")
+            throw authError("Failed to bind OAuth callback socket to \(redirect.bindHost):\(redirect.port)")
         }
         guard listen(fd, 1) == 0 else {
             close(fd)
@@ -119,7 +181,8 @@ private final class LoopbackOAuthReceiver {
             throw authError("Failed to resolve OAuth callback port")
         }
         socketFD = fd
-        redirectURI = "http://127.0.0.1:\(UInt16(bigEndian: boundAddress.sin_port))/oauth2callback"
+        self.redirect = redirect
+        self.redirectURI = redirect.absoluteString(boundPort: UInt16(bigEndian: boundAddress.sin_port))
     }
 
     deinit {
@@ -145,16 +208,24 @@ private final class LoopbackOAuthReceiver {
         let count = Darwin.read(connection, &buffer, buffer.count)
         guard count > 0,
               let request = String(bytes: buffer.prefix(Int(count)), encoding: .utf8) else {
-            try writeHTTPResponse(connection, success: false)
+            try writeHTTPResponse(connection, status: "400 Bad Request", body: "Gmail OAuth callback request was malformed.\n")
             throw authError("Failed to read Gmail OAuth callback")
         }
 
         do {
-            let code = try parseCallbackCode(request: request, expectedState: expectedState)
-            try writeHTTPResponse(connection, success: true)
+            let code = try parseCallbackCode(request: request, redirect: redirect, expectedState: expectedState)
+            try writeHTTPResponse(
+                connection,
+                status: "200 OK",
+                body: "Gmail authentication completed. You can close this window.\n"
+            )
             return code
         } catch {
-            try writeHTTPResponse(connection, success: false)
+            try writeHTTPResponse(
+                connection,
+                status: "400 Bad Request",
+                body: "Gmail authentication failed. Return to the terminal for details.\n"
+            )
             throw error
         }
     }
@@ -213,14 +284,29 @@ private func openBrowser(_ url: URL) throws {
     }
 }
 
-private func parseCallbackCode(request: String, expectedState: String) throws -> String {
+private func writeManualAuthorizationMessage(_ url: URL) {
+    let message = "Open this Gmail OAuth authorization URL to continue: \(url.absoluteString)\n"
+    FileHandle.standardError.write(Data(message.utf8))
+}
+
+private func parseCallbackCode(
+    request: String,
+    redirect: LoopbackRedirectURI,
+    expectedState: String
+) throws -> String {
     guard let firstLine = request.components(separatedBy: "\r\n").first else {
         throw authError("OAuth callback request was empty")
     }
     let parts = firstLine.split(separator: " ")
     guard parts.count >= 2,
-          let components = URLComponents(string: "http://127.0.0.1\(parts[1])") else {
+          parts[0] == "GET" else {
+        throw authError("OAuth callback requires GET")
+    }
+    guard let components = URLComponents(string: "http://\(redirect.bindHost):\(redirect.port)\(parts[1])") else {
         throw authError("OAuth callback request was malformed")
+    }
+    guard components.path == redirect.path else {
+        throw authError("OAuth callback path did not match the configured redirect URI")
     }
     var query: [String: String] = [:]
     for item in components.queryItems ?? [] {
@@ -350,13 +436,10 @@ private func codeChallenge(for verifier: String) -> String {
     base64URLString(Data(SHA256.hash(data: Data(verifier.utf8))))
 }
 
-private func writeHTTPResponse(_ connection: Int32, success: Bool) throws {
-    let body = success
-        ? "<html><body>Gmail authentication completed. You can close this window.</body></html>"
-        : "<html><body>Gmail authentication failed. Return to the terminal for details.</body></html>"
+private func writeHTTPResponse(_ connection: Int32, status: String, body: String) throws {
     let response = """
-    HTTP/1.1 200 OK\r
-    Content-Type: text/html; charset=utf-8\r
+    HTTP/1.1 \(status)\r
+    Content-Type: text/plain; charset=utf-8\r
     Connection: close\r
     Content-Length: \(body.utf8.count)\r
     \r
