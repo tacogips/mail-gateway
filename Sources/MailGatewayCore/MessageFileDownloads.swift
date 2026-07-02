@@ -24,10 +24,10 @@ private enum MessageFileDownloadLayout {
     case messageScoped
 }
 
-extension MailGatewayReaderService {
+extension MailGatewayService {
     public func getMessageFileSet(accountId: String, messageId: String) throws -> [String: Any] {
-        _ = try requireAccount(accountId)
-        return buildMessageFileSet(accountId: accountId, messageId: messageId)
+        let account = try requireAccount(accountId)
+        return try buildMessageFileSet(account: account, messageId: messageId)
     }
 
     public func downloadFile(downloadKey: String, outputDirectory: String?) throws -> [String: Any] {
@@ -87,22 +87,22 @@ extension MailGatewayReaderService {
         )
     }
 
-    private func buildMessageFileSet(accountId: String, messageId: String) -> [String: Any] {
-        let files = messageFiles(accountId: accountId, messageId: messageId)
+    private func buildMessageFileSet(account: AccountConfig, messageId: String) throws -> [String: Any] {
+        let files = try messageFiles(account: account, messageId: messageId)
         return [
-            "accountId": accountId,
+            "accountId": account.id,
             "messageId": messageId,
             "hasFiles": !files.isEmpty,
             "files": files
         ]
     }
 
-    private func messageFiles(accountId: String, messageId: String) -> [[String: Any]] {
-        let directory = messageDirectory(accountId: accountId, messageId: messageId)
-        let bodyFiles = [
+    private func messageFiles(account: AccountConfig, messageId: String) throws -> [[String: Any]] {
+        let directory = messageDirectory(accountId: account.id, messageId: messageId)
+        var bodyFiles = [
             messageFileIfExists(
                 MessageFileMetadataInput(
-                    accountId: accountId,
+                    accountId: account.id,
                     messageId: messageId,
                     kind: .bodyText,
                     url: directory.appendingPathComponent("body.txt"),
@@ -112,7 +112,7 @@ extension MailGatewayReaderService {
             ),
             messageFileIfExists(
                 MessageFileMetadataInput(
-                    accountId: accountId,
+                    accountId: account.id,
                     messageId: messageId,
                     kind: .bodyHTML,
                     url: directory.appendingPathComponent("body.html"),
@@ -121,7 +121,11 @@ extension MailGatewayReaderService {
                 )
             )
         ].compactMap { $0 }
-        return bodyFiles + temporaryFiles(accountId: accountId, messageId: messageId, directory: directory)
+        let localBodyKinds = Set(bodyFiles.compactMap { $0["kind"] as? String })
+        if shouldFetchRemoteBodyFiles(localBodyKinds: localBodyKinds, account: account) {
+            bodyFiles += try remoteBodyFiles(account: account, messageId: messageId, localBodyKinds: localBodyKinds)
+        }
+        return bodyFiles + temporaryFiles(accountId: account.id, messageId: messageId, directory: directory)
     }
 
     private func messageFileIfExists(_ input: MessageFileMetadataInput) -> [String: Any]? {
@@ -146,6 +150,34 @@ extension MailGatewayReaderService {
                     filename: entry,
                     mimeType: "application/octet-stream"
                 )
+            )
+        }
+    }
+
+    private func shouldFetchRemoteBodyFiles(localBodyKinds: Set<String>, account: AccountConfig) -> Bool {
+        guard !localBodyKinds.contains(MessageMaterializedFileKind.bodyText.rawValue) ||
+            !localBodyKinds.contains(MessageMaterializedFileKind.bodyHTML.rawValue) else {
+            return false
+        }
+        guard let credential = try? requireCredential(account.credentialId) else {
+            return false
+        }
+        return inspectTokenStore(credential: credential).exists
+    }
+
+    private func remoteBodyFiles(
+        account: AccountConfig,
+        messageId: String,
+        localBodyKinds: Set<String>
+    ) throws -> [[String: Any]] {
+        let credential = try requireCredential(account.credentialId)
+        return try providerAdapter.getMessageBodyFiles(credential: credential, messageId: messageId)
+        .filter { !localBodyKinds.contains($0.kind.rawValue) }
+        .map { bodyFile in
+            remoteMessageFileMetadata(
+                accountId: account.id,
+                messageId: messageId,
+                bodyFile: bodyFile
             )
         }
     }
@@ -178,8 +210,8 @@ extension MailGatewayReaderService {
         } catch {
             throw MailGatewayError(
                 "Failed to copy downloaded message file",
-                code: .configInvalid,
-                exitCode: .configurationError,
+                code: .fileOperationFailed,
+                exitCode: .generalError,
                 details: [
                     "source": normalizedPath(sourceURL.path),
                     "destination": normalizedPath(outputURL.path),
@@ -239,11 +271,34 @@ extension MailGatewayReaderService {
         return metadata
     }
 
+    private func remoteMessageFileMetadata(
+        accountId: String,
+        messageId: String,
+        bodyFile: GmailMessageBodyFile
+    ) -> [String: Any] {
+        [
+            "kind": bodyFile.kind.rawValue,
+            "filename": bodyFile.filename,
+            "hasPayload": true,
+            "mimeType": bodyFile.mimeType,
+            "sizeBytes": bodyFile.data.count,
+            "materializationState": AttachmentMaterializationState.notMaterialized.rawValue,
+            "downloadKey": encodeMessageFileDownloadKey(MessageFileDownloadKey(
+                accountId: accountId,
+                messageId: messageId,
+                kind: bodyFile.kind,
+                filename: bodyFile.filename,
+                attachmentId: nil,
+                mimeType: bodyFile.mimeType
+            ))
+        ]
+    }
+
     private func messageFileURL(for key: MessageFileDownloadKey) -> URL {
         let directory = messageDirectory(accountId: key.accountId, messageId: key.messageId)
         switch key.kind {
         case .attachment:
-            return directory.appendingPathComponent(attachmentStorageFilename(
+            return directory.appendingPathComponent(mailGatewayAttachmentStorageFilename(
                 attachmentId: key.attachmentId ?? key.filename,
                 filename: key.filename
             ))
@@ -287,6 +342,9 @@ extension MailGatewayReaderService {
     }
 
     private func materializedFileURL(for key: MessageFileDownloadKey) throws -> URL {
+        if key.kind == .bodyText || key.kind == .bodyHTML {
+            return try materializedBodyFileURL(for: key)
+        }
         guard key.kind == .attachment else {
             return messageFileURL(for: key)
         }
@@ -297,13 +355,13 @@ extension MailGatewayReaderService {
         guard let attachmentId = nonBlank(key.attachmentId) else {
             throw MailGatewayError(
                 "Attachment download keys require an attachmentId",
-                code: .invalidArgument,
-                exitCode: .invalidCliUsage
+                code: .invalidDownloadKey,
+                exitCode: .generalError
             )
         }
         let account = try requireAccount(key.accountId)
         let credential = try requireCredential(account.credentialId)
-        let payload = try GmailLiveReader().getAttachmentPayload(
+        let payload = try providerAdapter.getAttachmentPayload(
             credential: credential,
             messageId: key.messageId,
             attachmentId: attachmentId
@@ -319,8 +377,47 @@ extension MailGatewayReaderService {
         } catch {
             throw MailGatewayError(
                 "Failed to materialize Gmail attachment",
-                code: .configInvalid,
-                exitCode: .configurationError,
+                code: .fileOperationFailed,
+                exitCode: .generalError,
+                details: [
+                    "path": normalizedPath(cachedURL.path),
+                    "cause": error.localizedDescription
+                ]
+            )
+        }
+        return cachedURL
+    }
+
+    private func materializedBodyFileURL(for key: MessageFileDownloadKey) throws -> URL {
+        let cachedURL = messageFileURL(for: key)
+        if FileManager.default.isReadableFile(atPath: cachedURL.path) {
+            return cachedURL
+        }
+        let account = try requireAccount(key.accountId)
+        let credential = try requireCredential(account.credentialId)
+        guard let bodyFile = try providerAdapter
+            .getMessageBodyFiles(credential: credential, messageId: key.messageId)
+            .first(where: { $0.kind == key.kind }) else {
+            throw MailGatewayError(
+                "Gmail message body file was not found",
+                code: .attachmentNotFound,
+                exitCode: .graphqlExecutionError,
+                details: ["messageId": key.messageId, "kind": key.kind.rawValue]
+            )
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: cachedURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try bodyFile.data.write(to: cachedURL, options: [.atomic])
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cachedURL.path)
+        } catch {
+            throw MailGatewayError(
+                "Failed to materialize Gmail message body",
+                code: .fileOperationFailed,
+                exitCode: .generalError,
                 details: [
                     "path": normalizedPath(cachedURL.path),
                     "cause": error.localizedDescription
@@ -364,16 +461,16 @@ func decodeMessageFileDownloadKey(_ rawKey: String) throws -> MessageFileDownloa
     else {
         throw MailGatewayError(
             "Invalid message file download key",
-            code: .invalidArgument,
-            exitCode: .invalidCliUsage
+            code: .invalidDownloadKey,
+            exitCode: .generalError
         )
     }
     let attachmentId = nonBlank(object["attachmentId"] as? String)
     if kind == .attachment && attachmentId == nil {
         throw MailGatewayError(
             "Attachment download keys require an attachmentId",
-            code: .invalidArgument,
-            exitCode: .invalidCliUsage
+            code: .invalidDownloadKey,
+            exitCode: .generalError
         )
     }
     return MessageFileDownloadKey(
@@ -407,17 +504,9 @@ func attachmentDownloadKey(
     ))
 }
 
-private func attachmentStorageFilename(attachmentId: String, filename: String) -> String {
-    let idComponent = sanitizedPathComponent(attachmentId)
+public func mailGatewayAttachmentStorageFilename(attachmentId: String, filename: String) -> String {
     let filenameComponent = sanitizedFilename(filename)
-    let preferred = "\(idComponent)-\(filenameComponent)"
-    guard preferred.utf8.count > 200 else {
-        return preferred
-    }
-    let digest = SHA256.hash(data: Data(attachmentId.utf8))
-        .map { String(format: "%02x", $0) }
-        .joined()
-    let fixedPrefix = attachmentStorageFilenamePrefix(attachmentId: attachmentId, digest: digest)
+    let fixedPrefix = attachmentStorageFilenamePrefix(attachmentId: attachmentId)
     return fixedPrefix + utf8FilenameSuffix(filenameComponent, maxBytes: max(20, 200 - fixedPrefix.utf8.count))
 }
 

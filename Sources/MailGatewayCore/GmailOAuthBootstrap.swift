@@ -72,15 +72,56 @@ struct GmailOAuthBootstrapper {
     }
 }
 
-private struct GmailOAuthTokenResponse {
+private struct GmailOAuthTokenResponse: Decodable {
     let accessToken: String
     let refreshToken: String?
     let tokenType: String?
     let scope: String?
     let expiresIn: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case tokenType = "token_type"
+        case scope
+        case expiresIn = "expires_in"
+    }
+
+    init(
+        accessToken: String,
+        refreshToken: String?,
+        tokenType: String?,
+        scope: String?,
+        expiresIn: Int?
+    ) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.tokenType = tokenType
+        self.scope = scope
+        self.expiresIn = expiresIn
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accessToken = try container.decodeIfPresent(String.self, forKey: .accessToken) ?? ""
+        refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken)
+        tokenType = try container.decodeIfPresent(String.self, forKey: .tokenType)
+        scope = try container.decodeIfPresent(String.self, forKey: .scope)
+        expiresIn = try container.decodeIfPresent(Int.self, forKey: .expiresIn)
+    }
+
+    func normalized(accessToken: String) -> GmailOAuthTokenResponse {
+        GmailOAuthTokenResponse(
+            accessToken: accessToken,
+            refreshToken: nonBlank(refreshToken),
+            tokenType: nonBlank(tokenType),
+            scope: nonBlank(scope),
+            expiresIn: expiresIn
+        )
+    }
 }
 
-private struct GmailProfile {
+private struct GmailProfile: Decodable {
     let emailAddress: String?
 }
 
@@ -120,7 +161,7 @@ private struct LoopbackRedirectURI {
         guard normalizedHost == "127.0.0.1" || normalizedHost == "localhost" else {
             throw authError("OAuth redirect URI must use localhost or 127.0.0.1")
         }
-        authorizationHost = normalizedHost
+        authorizationHost = "127.0.0.1"
         bindHost = "127.0.0.1"
         port = UInt16(explicitPort)
         path = components.path.isEmpty ? "/" : components.path
@@ -190,45 +231,88 @@ final class LoopbackOAuthReceiver: @unchecked Sendable {
     }
 
     func waitForCode(expectedState: String, timeoutSeconds: Int32) throws -> String {
-        var pollSet = [pollfd(fd: socketFD, events: Int16(POLLIN), revents: 0)]
-        let pollResult = Darwin.poll(&pollSet, 1, timeoutSeconds * 1_000)
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+        while Date() < deadline {
+            let remainingMilliseconds = max(1, Int32(deadline.timeIntervalSinceNow * 1_000))
+            var pollSet = [pollfd(fd: socketFD, events: Int16(POLLIN), revents: 0)]
+            let pollResult = Darwin.poll(&pollSet, 1, remainingMilliseconds)
+            guard pollResult > 0 else {
+                break
+            }
+
+            let connection = accept(socketFD, nil, nil)
+            guard connection >= 0 else {
+                throw authError("Failed to accept Gmail OAuth callback")
+            }
+            defer {
+                close(connection)
+            }
+
+            guard let request = try readHTTPRequest(connection: connection) else {
+                try writeHTTPResponse(connection, status: "404 Not Found", body: "Gmail OAuth callback was not found.\n")
+                continue
+            }
+            guard callbackRequestPathMatches(request: request, redirect: redirect) else {
+                try writeHTTPResponse(connection, status: "404 Not Found", body: "Gmail OAuth callback was not found.\n")
+                continue
+            }
+
+            do {
+                let code = try parseCallbackCode(request: request, redirect: redirect, expectedState: expectedState)
+                try writeHTTPResponse(
+                    connection,
+                    status: "200 OK",
+                    body: "Gmail authentication completed. You can close this window.\n"
+                )
+                return code
+            } catch {
+                try writeHTTPResponse(
+                    connection,
+                    status: "400 Bad Request",
+                    body: "Gmail authentication failed. Return to the terminal for details.\n"
+                )
+                throw error
+            }
+        }
+        throw authError("Timed out waiting for Gmail OAuth callback")
+    }
+}
+
+private func readHTTPRequest(connection: Int32) throws -> String? {
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 2_048)
+    while data.count < 16_384 {
+        var pollSet = [pollfd(fd: connection, events: Int16(POLLIN), revents: 0)]
+        let pollResult = Darwin.poll(&pollSet, 1, 1_000)
         guard pollResult > 0 else {
-            throw authError("Timed out waiting for Gmail OAuth callback")
+            break
         }
-
-        let connection = accept(socketFD, nil, nil)
-        guard connection >= 0 else {
-            throw authError("Failed to accept Gmail OAuth callback")
-        }
-        defer {
-            close(connection)
-        }
-
-        var buffer = [UInt8](repeating: 0, count: 8_192)
         let count = Darwin.read(connection, &buffer, buffer.count)
-        guard count > 0,
-              let request = String(bytes: buffer.prefix(Int(count)), encoding: .utf8) else {
-            try writeHTTPResponse(connection, status: "400 Bad Request", body: "Gmail OAuth callback request was malformed.\n")
-            throw authError("Failed to read Gmail OAuth callback")
+        guard count > 0 else {
+            break
         }
-
-        do {
-            let code = try parseCallbackCode(request: request, redirect: redirect, expectedState: expectedState)
-            try writeHTTPResponse(
-                connection,
-                status: "200 OK",
-                body: "Gmail authentication completed. You can close this window.\n"
-            )
-            return code
-        } catch {
-            try writeHTTPResponse(
-                connection,
-                status: "400 Bad Request",
-                body: "Gmail authentication failed. Return to the terminal for details.\n"
-            )
-            throw error
+        data.append(contentsOf: buffer.prefix(Int(count)))
+        if data.range(of: Data("\r\n\r\n".utf8)) != nil {
+            break
         }
     }
+    guard !data.isEmpty,
+          let request = String(data: data, encoding: .utf8) else {
+        return nil
+    }
+    return request
+}
+
+private func callbackRequestPathMatches(request: String, redirect: LoopbackRedirectURI) -> Bool {
+    guard let firstLine = request.components(separatedBy: "\r\n").first else {
+        return false
+    }
+    let parts = firstLine.split(separator: " ")
+    guard parts.count >= 2,
+          let components = URLComponents(string: "http://\(redirect.bindHost):\(redirect.port)\(parts[1])") else {
+        return false
+    }
+    return components.path == redirect.path
 }
 
 private func buildAuthorizationURL(
@@ -357,23 +441,20 @@ private func exchangeAuthorizationCode(
     request.httpBody = formURLEncoded(fields).data(using: .utf8)
 
     let response = try performGmailHTTPRequest(request, context: "Gmail OAuth token exchange failed")
-    guard let object = try JSONSerialization.jsonObject(with: response.data) as? [String: Any] else {
+    let tokenResponse: GmailOAuthTokenResponse
+    do {
+        tokenResponse = try JSONDecoder().decode(GmailOAuthTokenResponse.self, from: response.data)
+    } catch {
         throw authError("Gmail OAuth token response was not a JSON object")
     }
-    guard let accessToken = nonBlank(object["access_token"] as? String) else {
+    guard let accessToken = nonBlank(tokenResponse.accessToken) else {
         throw MailGatewayError(
             "Gmail OAuth token response did not include an access token",
             code: .authRequired,
             exitCode: .authenticationBootstrapError
         )
     }
-    return GmailOAuthTokenResponse(
-        accessToken: accessToken,
-        refreshToken: nonBlank(object["refresh_token"] as? String),
-        tokenType: nonBlank(object["token_type"] as? String),
-        scope: nonBlank(object["scope"] as? String),
-        expiresIn: intValue(object["expires_in"])
-    )
+    return tokenResponse.normalized(accessToken: accessToken)
 }
 
 private func validateGmailProfile(accessToken: String) throws -> GmailProfile {
@@ -385,10 +466,13 @@ private func validateGmailProfile(accessToken: String) throws -> GmailProfile {
     request.timeoutInterval = 30
     request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
     let response = try performGmailHTTPRequest(request, context: "Gmail profile validation failed")
-    guard let object = try JSONSerialization.jsonObject(with: response.data) as? [String: Any] else {
+    let profile: GmailProfile
+    do {
+        profile = try JSONDecoder().decode(GmailProfile.self, from: response.data)
+    } catch {
         throw authError("Gmail profile response was not a JSON object")
     }
-    return GmailProfile(emailAddress: nonBlank(object["emailAddress"] as? String))
+    return GmailProfile(emailAddress: nonBlank(profile.emailAddress))
 }
 
 private func buildTokenStore(

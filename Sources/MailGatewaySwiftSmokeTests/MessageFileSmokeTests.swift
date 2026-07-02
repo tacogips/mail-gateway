@@ -3,25 +3,64 @@ import MailGatewayCore
 
 func testMessageFileDownload(cleanup: inout [String]) throws {
     let fixture = try trackedFixture(cleanup: &cleanup)
+    var env = credentialEnv(fixture: fixture)
+    env[MailGatewayConfigLoader.getCredentialJSONEnvVarName(
+        credentialId: "gmail-personal",
+        valueKey: "token_store_json"
+    )] = gmailReadTokenStoreJSON()
+
+    GmailRequestCaptureProtocol.reset()
+    GmailRequestCaptureProtocol.responseBody = """
+    {
+      "id": "message-2",
+      "threadId": "thread-2",
+      "payload": {
+        "mimeType": "multipart/alternative",
+        "parts": [
+          {
+            "mimeType": "text/plain",
+            "body": {
+              "size": 20,
+              "data": "cHJpdmF0ZSBib2R5IHBheWxvYWQ"
+            }
+          },
+          {
+            "mimeType": "text/html",
+            "body": {
+              "size": 27,
+              "data": "PHA-cHJpdmF0ZSBodG1sIHBheWxvYWQ8L3A-"
+            }
+          }
+        ]
+      }
+    }
+    """
+    URLProtocol.registerClass(GmailRequestCaptureProtocol.self)
+    defer {
+        URLProtocol.unregisterClass(GmailRequestCaptureProtocol.self)
+        GmailRequestCaptureProtocol.reset()
+    }
+
     let materializedDir = URL(fileURLWithPath: fixture.attachmentRoot)
         .appendingPathComponent("personal", isDirectory: true)
         .appendingPathComponent("message-2", isDirectory: true)
-    try writeMessageFiles(in: materializedDir)
+    try writeTemporaryMessageFiles(in: materializedDir)
     let lookupResult = runCli([
         "graphql",
         "--config", fixture.configPath,
         "--query", """
         { messageFileSet(accountId: "personal", messageId: "message-2") \
-        { hasFiles files { kind filename hasPayload downloadKey materializationState } } }
+        { hasFiles files { kind filename hasPayload localPath downloadKey materializationState } } }
         """
-    ])
+    ], env: env)
     try assertMessageFileLookup(lookupResult)
     let bodyDownloadKey = try downloadKey(kind: "BODY_TEXT", from: lookupResult)
     try assertDownloadedFile(
         downloadKey: bodyDownloadKey,
         fixture: fixture,
         expectedKind: "BODY_TEXT",
-        expectedContents: "private body payload"
+        expectedContents: "private body payload",
+        env: env
     )
     let temporaryDownloadKey = try downloadKey(kind: "TEMPORARY_FILE", from: lookupResult)
     try assertDownloadedFile(
@@ -122,12 +161,10 @@ func testRemoteAttachmentDownload(cleanup: inout [String]) throws {
         cachedAttachment?["materializationState"] as? String == "CACHED",
         "cached long-id attachment lookup should report cached state"
     )
-    try assert(cachedAttachment?["localPath"] is String, "cached long-id attachment lookup should return local path")
+    try assert(cachedAttachment?["localPath"] == nil, "cached long-id attachment lookup should not expose local path")
 }
 
-func writeMessageFiles(in materializedDir: URL) throws {
-    try writeText(materializedDir.appendingPathComponent("body.txt").path, "private body payload")
-    try writeText(materializedDir.appendingPathComponent("body.html").path, "<p>private html payload</p>")
+func writeTemporaryMessageFiles(in materializedDir: URL) throws {
     try writeText(materializedDir
         .appendingPathComponent("temp", isDirectory: true)
         .appendingPathComponent("tmp-1-report.txt")

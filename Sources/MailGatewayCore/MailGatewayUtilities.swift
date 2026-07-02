@@ -1,5 +1,13 @@
 import Foundation
 
+func mailGatewayVersion() -> String {
+    if let version = try? String(contentsOfFile: "VERSION", encoding: .utf8),
+       let trimmed = nonBlank(version) {
+        return trimmed
+    }
+    return "0.1.4"
+}
+
 func nonBlank(_ value: String?) -> String? {
     guard let value else {
         return nil
@@ -32,9 +40,25 @@ func normalizedPath(_ path: String) -> String {
 }
 
 func isWithinRoot(rootPath: String, candidatePath: String) -> Bool {
-    let root = normalizedPath(rootPath)
-    let candidate = normalizedPath(candidatePath)
+    let root = canonicalPath(rootPath)
+    let candidate = canonicalPath(candidatePath)
     return candidate == root || candidate.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+}
+
+private func canonicalPath(_ path: String) -> String {
+    let normalized = normalizedPath(path)
+    let isAbsolute = normalized.hasPrefix("/")
+    var resolved = URL(
+        fileURLWithPath: isAbsolute ? "/" : FileManager.default.currentDirectoryPath,
+        isDirectory: true
+    )
+    for component in normalized.split(separator: "/", omittingEmptySubsequences: true) {
+        resolved.appendPathComponent(String(component))
+        if FileManager.default.fileExists(atPath: resolved.path) {
+            resolved = resolved.resolvingSymlinksInPath()
+        }
+    }
+    return normalizedPath(resolved.path)
 }
 
 func sanitizedPathComponent(_ value: String) -> String {

@@ -187,6 +187,16 @@ func loadVariables(flags: [String: StringOrBool]) throws -> [String: Any] {
     return [:]
 }
 
+func rejectUnsupportedVariables(flags: [String: StringOrBool]) throws {
+    if flags["variables"] != nil || flags["variables-file"] != nil {
+        throw MailGatewayError(
+            "GraphQL variables are not supported yet; inline literal arguments in --query or --query-file",
+            code: .invalidArgument,
+            exitCode: .invalidCliUsage
+        )
+    }
+}
+
 private func loadVariablesFile(_ path: String) throws -> [String: Any] {
     do {
         let source = try String(contentsOfFile: path, encoding: .utf8)
@@ -233,7 +243,8 @@ func errorOutput(_ error: MailGatewayError) -> [String: Any] {
     var payload: [String: Any] = [
         "message": error.message,
         "code": error.code.rawValue,
-        "exitCode": error.exitCode.rawValue
+        "exitCode": error.exitCode.rawValue,
+        "requestId": UUID().uuidString
     ]
     if !error.details.isEmpty {
         payload["details"] = error.details

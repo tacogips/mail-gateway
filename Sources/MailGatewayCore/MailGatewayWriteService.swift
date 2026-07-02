@@ -58,15 +58,28 @@ public struct OutboundMailInput: Sendable {
 }
 
 public struct MailGatewayWriteService {
-    private let readerService: MailGatewayReaderService
+    private let readerService: MailGatewayService
+    private let providerAdapter: MailProviderAdapter
 
     public init(config: MailGatewayConfig) {
-        self.readerService = MailGatewayReaderService(config: config)
+        self.init(config: config, providerAdapter: GmailProviderAdapter())
+    }
+
+    init(config: MailGatewayConfig, providerAdapter: MailProviderAdapter) {
+        self.readerService = MailGatewayService(config: config, providerAdapter: providerAdapter)
+        self.providerAdapter = providerAdapter
     }
 
     public func sendMessage(input: OutboundMailInput, mode: MailGatewayWriteMode) throws -> [String: Any] {
         let account = try readerService.requireAccount(input.accountId)
         let credential = try readerService.requireCredential(account.credentialId)
+        guard !account.isFallback else {
+            throw MailGatewayError(
+                "Fallback account cannot send mail; create a config file with an explicit email_address",
+                code: .configInvalid,
+                exitCode: .graphqlExecutionError
+            )
+        }
         guard credential.accessMode == .readSend else {
             throw MailGatewayError(
                 "Credential \(credential.id) must use read_send access mode before \(mode.authContext)",
@@ -74,25 +87,88 @@ public struct MailGatewayWriteService {
                 exitCode: .graphqlExecutionError
             )
         }
+        try validateAuthenticatedSenderIdentity(account: account, credential: credential)
         try validateOutboundInput(input, account: account)
-        let validatedAttachments = try input.attachmentPaths.map(readerService.validateSendAttachmentPath)
+        let attachments = validateOutboundAttachmentPaths(input.attachmentPaths, readerService: readerService)
 
         switch mode {
         case .draftDefault:
-            return try GmailLiveWriter().createDraft(
+            return try providerAdapter.createDraft(
                 account: account,
                 credential: credential,
                 input: input,
-                validatedAttachmentPaths: validatedAttachments
-            )
+                validatedAttachmentPaths: attachments.acceptedPaths,
+                rejectedAttachments: attachments.rejectedAttachments
+            ).graphQLObject()
         case .directSend:
-            return try GmailLiveWriter().sendMessage(
+            return try providerAdapter.sendMessage(
                 account: account,
                 credential: credential,
                 input: input,
-                validatedAttachmentPaths: validatedAttachments
-            )
+                validatedAttachmentPaths: attachments.acceptedPaths,
+                rejectedAttachments: attachments.rejectedAttachments
+            ).graphQLObject()
         }
+    }
+}
+
+private struct OutboundAttachmentValidation {
+    let acceptedPaths: [String]
+    let rejectedAttachments: [MailRejectedAttachment]
+}
+
+private func validateOutboundAttachmentPaths(
+    _ paths: [String],
+    readerService: MailGatewayService
+) -> OutboundAttachmentValidation {
+    var acceptedPaths: [String] = []
+    var rejectedAttachments: [MailRejectedAttachment] = []
+    for path in paths {
+        do {
+            let validatedPath = try readerService.validateSendAttachmentPath(path)
+            guard FileManager.default.isReadableFile(atPath: validatedPath) else {
+                rejectedAttachments.append(MailRejectedAttachment(
+                    path: path,
+                    code: MailGatewayErrorCode.attachmentNotFound.rawValue,
+                    reason: "Attachment path is not readable"
+                ))
+                continue
+            }
+            acceptedPaths.append(validatedPath)
+        } catch let error as MailGatewayError {
+            rejectedAttachments.append(MailRejectedAttachment(
+                path: path,
+                code: error.code.rawValue,
+                reason: error.message
+            ))
+        } catch {
+            rejectedAttachments.append(MailRejectedAttachment(
+                path: path,
+                code: MailGatewayErrorCode.invalidArgument.rawValue,
+                reason: error.localizedDescription
+            ))
+        }
+    }
+    return OutboundAttachmentValidation(acceptedPaths: acceptedPaths, rejectedAttachments: rejectedAttachments)
+}
+
+private func validateAuthenticatedSenderIdentity(account: AccountConfig, credential: CredentialConfig) throws {
+    let tokenState = inspectTokenStore(credential: credential)
+    guard let authenticatedEmail = tokenState.emailAddress else {
+        return
+    }
+    guard authenticatedEmail.caseInsensitiveCompare(account.emailAddress) == .orderedSame else {
+        throw MailGatewayError(
+            "Configured account email does not match authenticated Gmail identity",
+            code: .configInvalid,
+            exitCode: .graphqlExecutionError,
+            details: [
+                "accountId": account.id,
+                "credentialId": credential.id,
+                "configuredEmail": account.emailAddress,
+                "authenticatedEmail": authenticatedEmail
+            ]
+        )
     }
 }
 

@@ -3,13 +3,16 @@ import Foundation
 import FoundationNetworking
 #endif
 
+private let gmailRawMessageSizeLimitBytes = 25 * 1_024 * 1_024
+
 struct GmailLiveWriter {
     func createDraft(
         account: AccountConfig,
         credential: CredentialConfig,
         input: OutboundMailInput,
-        validatedAttachmentPaths: [String]
-    ) throws -> [String: Any] {
+        validatedAttachmentPaths: [String],
+        rejectedAttachments: [MailRejectedAttachment]
+    ) throws -> MailWriteResult {
         let accessToken = try validGmailAccessToken(credential: credential, use: .draftCreation)
         let rawMessage = try buildRawMessage(
             from: account.emailAddress,
@@ -23,24 +26,25 @@ struct GmailLiveWriter {
             context: "Gmail draft creation failed"
         )
         let message = object["message"] as? [String: Any] ?? [:]
-        return [
-            "operation": MailGatewayWriteMode.draftDefault.operationValue,
-            "accountId": account.id,
-            "provider": account.provider.graphQLValue,
-            "draftId": object["id"] as? String ?? NSNull(),
-            "messageId": message["id"] as? String ?? NSNull(),
-            "threadId": message["threadId"] as? String ?? NSNull(),
-            "status": "DRAFT_CREATED",
-            "rejectedAttachments": []
-        ]
+        return MailWriteResult(
+            operation: MailGatewayWriteMode.draftDefault.operationValue,
+            accountId: account.id,
+            provider: account.provider.graphQLValue,
+            draftId: object["id"] as? String,
+            messageId: message["id"] as? String,
+            threadId: message["threadId"] as? String,
+            status: "DRAFT_CREATED",
+            rejectedAttachments: rejectedAttachments
+        )
     }
 
     func sendMessage(
         account: AccountConfig,
         credential: CredentialConfig,
         input: OutboundMailInput,
-        validatedAttachmentPaths: [String]
-    ) throws -> [String: Any] {
+        validatedAttachmentPaths: [String],
+        rejectedAttachments: [MailRejectedAttachment]
+    ) throws -> MailWriteResult {
         let accessToken = try validGmailAccessToken(credential: credential, use: .directSend)
         let rawMessage = try buildRawMessage(
             from: account.emailAddress,
@@ -53,15 +57,16 @@ struct GmailLiveWriter {
             body: ["raw": rawMessage],
             context: "Gmail message send failed"
         )
-        return [
-            "operation": MailGatewayWriteMode.directSend.operationValue,
-            "accountId": account.id,
-            "provider": account.provider.graphQLValue,
-            "messageId": object["id"] as? String ?? NSNull(),
-            "threadId": object["threadId"] as? String ?? NSNull(),
-            "status": "SENT",
-            "rejectedAttachments": []
-        ]
+        return MailWriteResult(
+            operation: MailGatewayWriteMode.directSend.operationValue,
+            accountId: account.id,
+            provider: account.provider.graphQLValue,
+            draftId: nil,
+            messageId: object["id"] as? String,
+            threadId: object["threadId"] as? String,
+            status: "SENT",
+            rejectedAttachments: rejectedAttachments
+        )
     }
 }
 
@@ -71,10 +76,7 @@ private func postGmailJSONObject(
     body: [String: Any],
     context: String
 ) throws -> [String: Any] {
-    var components = URLComponents()
-    components.scheme = "https"
-    components.host = "gmail.googleapis.com"
-    components.path = path
+    let components = gmailURLComponents(path: path)
     guard let url = components.url else {
         throw MailGatewayError(
             "Failed to construct Gmail API URL",
@@ -99,11 +101,13 @@ private func postGmailJSONObject(
     return object
 }
 
-private func buildRawMessage(from: String, input: OutboundMailInput, attachmentPaths: [String]) throws -> String {
+func buildRawMessage(from: String, input: OutboundMailInput, attachmentPaths: [String]) throws -> String {
     var headers: [String] = [
-        "From: \(from)",
-        "To: \(input.to.joined(separator: ", "))"
+        "From: \(from)"
     ]
+    if !input.to.isEmpty {
+        headers.append("To: \(input.to.joined(separator: ", "))")
+    }
     if !input.cc.isEmpty {
         headers.append("Cc: \(input.cc.joined(separator: ", "))")
     }
@@ -124,7 +128,19 @@ private func buildRawMessage(from: String, input: OutboundMailInput, attachmentP
     } else {
         body = try multipartBody(input: input, headers: &headers, attachmentPaths: attachmentPaths)
     }
-    return base64URLString(Data((headers.joined(separator: "\r\n") + "\r\n\r\n" + body).utf8))
+    let messageData = Data((headers.joined(separator: "\r\n") + "\r\n\r\n" + body).utf8)
+    guard messageData.count <= gmailRawMessageSizeLimitBytes else {
+        throw MailGatewayError(
+            "Raw message exceeds Gmail size limit before provider call",
+            code: .invalidArgument,
+            exitCode: .graphqlExecutionError,
+            details: [
+                "sizeBytes": String(messageData.count),
+                "limitBytes": String(gmailRawMessageSizeLimitBytes)
+            ]
+        )
+    }
+    return base64URLString(messageData)
 }
 
 private func mimeHeaderValue(_ value: String) -> String {
@@ -157,41 +173,135 @@ private func mimeHeaderValue(_ value: String) -> String {
 }
 
 private func simpleBody(input: OutboundMailInput, headers: inout [String]) -> String {
+    if let textBody = input.textBody,
+       let htmlBody = input.htmlBody {
+        let boundary = "mail-gateway-alt-\(UUID().uuidString)"
+        headers.append("Content-Type: multipart/alternative; boundary=\"\(boundary)\"")
+        return multipartAlternativeBody(textBody: textBody, htmlBody: htmlBody, boundary: boundary)
+    }
     if let htmlBody = input.htmlBody {
         headers.append("Content-Type: text/html; charset=utf-8")
         headers.append("Content-Transfer-Encoding: 8bit")
-        return htmlBody
+        return normalizedMIMEText(htmlBody)
     }
     headers.append("Content-Type: text/plain; charset=utf-8")
     headers.append("Content-Transfer-Encoding: 8bit")
-    return input.textBody ?? ""
+    return normalizedMIMEText(input.textBody ?? "")
 }
 
 private func multipartBody(input: OutboundMailInput, headers: inout [String], attachmentPaths: [String]) throws -> String {
     let boundary = "mail-gateway-\(UUID().uuidString)"
     headers.append("Content-Type: multipart/mixed; boundary=\"\(boundary)\"")
     var parts: [String] = []
-    let contentType = input.htmlBody == nil ? "text/plain" : "text/html"
-    let bodyText = input.htmlBody ?? input.textBody ?? ""
-    parts.append("""
---\(boundary)
-Content-Type: \(contentType); charset=utf-8
-Content-Transfer-Encoding: 8bit
-
-\(bodyText)
-""")
+    parts.append(multipartMessageBodyPart(input: input, boundary: boundary))
     for path in attachmentPaths {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         let filename = sanitizedFilename(path)
-        parts.append("""
---\(boundary)
-Content-Type: application/octet-stream; name="\(filename)"
-Content-Disposition: attachment; filename="\(filename)"
-Content-Transfer-Encoding: base64
-
-\(data.base64EncodedString())
-""")
+        let contentType = attachmentContentType(for: filename)
+        parts.append([
+            "--\(boundary)",
+            "Content-Type: \(contentType); name=\"\(filename)\"",
+            "Content-Disposition: attachment; filename=\"\(filename)\"",
+            "Content-Transfer-Encoding: base64",
+            "",
+            wrappedBase64(data)
+        ].joined(separator: "\r\n"))
     }
     parts.append("--\(boundary)--")
     return parts.joined(separator: "\r\n")
+}
+
+private func attachmentContentType(for filename: String) -> String {
+    let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
+    switch ext {
+    case "txt":
+        return "text/plain"
+    case "htm", "html":
+        return "text/html"
+    case "csv":
+        return "text/csv"
+    case "json":
+        return "application/json"
+    case "pdf":
+        return "application/pdf"
+    case "png":
+        return "image/png"
+    case "jpg", "jpeg":
+        return "image/jpeg"
+    case "gif":
+        return "image/gif"
+    case "webp":
+        return "image/webp"
+    case "svg":
+        return "image/svg+xml"
+    case "mp3":
+        return "audio/mpeg"
+    case "mp4":
+        return "video/mp4"
+    case "mov":
+        return "video/quicktime"
+    case "eml":
+        return "message/rfc822"
+    case "zip":
+        return "application/zip"
+    default:
+        return "application/octet-stream"
+    }
+}
+
+private func multipartMessageBodyPart(input: OutboundMailInput, boundary: String) -> String {
+    if let textBody = input.textBody,
+       let htmlBody = input.htmlBody {
+        let alternativeBoundary = "mail-gateway-alt-\(UUID().uuidString)"
+        return [
+            "--\(boundary)",
+            "Content-Type: multipart/alternative; boundary=\"\(alternativeBoundary)\"",
+            "",
+            multipartAlternativeBody(textBody: textBody, htmlBody: htmlBody, boundary: alternativeBoundary)
+        ].joined(separator: "\r\n")
+    }
+    let contentType = input.htmlBody == nil ? "text/plain" : "text/html"
+    let bodyText = normalizedMIMEText(input.htmlBody ?? input.textBody ?? "")
+    return [
+        "--\(boundary)",
+        "Content-Type: \(contentType); charset=utf-8",
+        "Content-Transfer-Encoding: 8bit",
+        "",
+        bodyText
+    ].joined(separator: "\r\n")
+}
+
+private func multipartAlternativeBody(textBody: String, htmlBody: String, boundary: String) -> String {
+    [
+        [
+            "--\(boundary)",
+            "Content-Type: text/plain; charset=utf-8",
+            "Content-Transfer-Encoding: 8bit",
+            "",
+            normalizedMIMEText(textBody)
+        ].joined(separator: "\r\n"),
+        [
+            "--\(boundary)",
+            "Content-Type: text/html; charset=utf-8",
+            "Content-Transfer-Encoding: 8bit",
+            "",
+            normalizedMIMEText(htmlBody)
+        ].joined(separator: "\r\n"),
+        "--\(boundary)--"
+    ].joined(separator: "\r\n")
+}
+
+private func normalizedMIMEText(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .replacingOccurrences(of: "\r", with: "\n")
+        .replacingOccurrences(of: "\n", with: "\r\n")
+}
+
+private func wrappedBase64(_ data: Data) -> String {
+    data.base64EncodedString(options: [
+        .lineLength76Characters,
+        .endLineWithCarriageReturn,
+        .endLineWithLineFeed
+    ])
 }

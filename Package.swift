@@ -11,8 +11,7 @@ let package = Package(
     .library(name: "MailGatewayCore", targets: ["MailGatewayCore"]),
     .executable(name: "mail-gateway-reader", targets: ["MailGatewayReader"]),
     .executable(name: "mail-gateway-draft", targets: ["MailGatewayDraft"]),
-    .executable(name: "mail-gateway-sender", targets: ["MailGatewaySender"]),
-    .executable(name: "mail-gateway-swift-smoke-tests", targets: ["MailGatewaySwiftSmokeTests"])
+    .executable(name: "mail-gateway-sender", targets: ["MailGatewaySender"])
   ],
   targets: [
     .target(name: "MailGatewayCore"),
@@ -34,8 +33,7 @@ let package = Package(
     ),
     .testTarget(
       name: "MailGatewayCoreTests",
-      dependencies: ["MailGatewayCore"],
-      path: "Tests/AppCoreTests"
+      dependencies: ["MailGatewayCore"]
     )
   ],
   swiftLanguageModes: [.v6]

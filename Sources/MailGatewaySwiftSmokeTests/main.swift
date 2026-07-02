@@ -144,6 +144,7 @@ func testMissingDefaultConfigUsesFallback(cleanup: inout [String]) throws {
     let validate = runCli(["config", "validate"], env: env)
     try assert(validate.exitCode == 0, "missing default config should use fallback config")
     let validationOutput = try decodeObject(validate.stdout)
+    try assert(validationOutput["fallbackConfig"] as? Bool == true, "fallback config should be marked")
     try assert(validationOutput["accountIds"] as? [String] == ["personal"], "fallback account id should be personal")
     try assert(
         validationOutput["credentialIds"] as? [String] == ["gmail-personal"],
@@ -340,7 +341,7 @@ func testStructuredThreadSearchGmailQuery(cleanup: inout [String]) throws {
     ], env: env)
     try assert(sentWithDateRange.exitCode == 0, "sent structured thread search should succeed")
     try assert(
-        capturedGmailQuery(at: 4) == "in:sent after:2026/06/25 before:2026/06/26 subject:receipt",
+        capturedGmailQuery(at: 4) == "in:sent after:1782345600 before:2026/06/26 subject:receipt",
         "sent structured search should combine direction, date range, and caller query"
     )
     try assert(
@@ -483,8 +484,11 @@ func testInvalidInlineVariables(cleanup: inout [String]) throws {
         "--query", "{ accounts { id } }",
         "--variables", "{bad-json}"
     ])
-    try assert(result.exitCode == 2, "invalid inline variables should be CLI usage error")
-    try assert(result.stderr.contains("--variables must be valid JSON"), "invalid variables error should be explained")
+    try assert(result.exitCode == 2, "inline variables should be CLI usage error")
+    try assert(
+        result.stderr.contains("GraphQL variables are not supported yet"),
+        "unsupported variables error should be explained"
+    )
 }
 
 func testInvalidVariablesFile(cleanup: inout [String]) throws {
@@ -497,10 +501,10 @@ func testInvalidVariablesFile(cleanup: inout [String]) throws {
         "--query", "{ accounts { id } }",
         "--variables-file", variablesPath
     ])
-    try assert(result.exitCode == 2, "invalid variables file should be CLI usage error")
+    try assert(result.exitCode == 2, "variables file should be CLI usage error")
     try assert(
-        result.stderr.contains("Failed to parse JSON variables file"),
-        "invalid variables file error should be explained"
+        result.stderr.contains("GraphQL variables are not supported yet"),
+        "unsupported variables file error should be explained"
     )
 }
 
@@ -523,7 +527,10 @@ func testAttachmentLookup(cleanup: inout [String]) throws {
         .path
     try FileManager.default.createDirectory(atPath: messageDir, withIntermediateDirectories: true)
     let attachmentPath = URL(fileURLWithPath: messageDir)
-        .appendingPathComponent("attachment-1-report.pdf")
+        .appendingPathComponent(mailGatewayAttachmentStorageFilename(
+            attachmentId: "attachment-1",
+            filename: "report.pdf"
+        ))
         .path
     try writeText(attachmentPath, "payload")
     let result = runCli([
@@ -546,6 +553,7 @@ func testAttachmentLookup(cleanup: inout [String]) throws {
     let output = try decodeObject(result.stdout)
     let data = output["data"] as? [String: Any]
     let attachment = data?["attachment"] as? [String: Any]
+    try assert(attachment?["localPath"] == nil, "attachment GraphQL query should not expose local path")
     guard let downloadKey = attachment?["downloadKey"] as? String else {
         throw SmokeTestFailure.assertionFailed("cached attachment should include a download key")
     }
@@ -557,7 +565,10 @@ func testAttachmentLookup(cleanup: inout [String]) throws {
     )
 
     let stringLiteralFieldNamePath = URL(fileURLWithPath: messageDir)
-        .appendingPathComponent("mimeType-report.pdf")
+        .appendingPathComponent(mailGatewayAttachmentStorageFilename(
+            attachmentId: "mimeType",
+            filename: "report.pdf"
+        ))
         .path
     try writeText(stringLiteralFieldNamePath, "payload")
     let projectedResult = runCli([
@@ -580,7 +591,10 @@ func testAttachmentLookup(cleanup: inout [String]) throws {
     )
 
     let stringLiteralArgumentNamePath = URL(fileURLWithPath: messageDir)
-        .appendingPathComponent("accountId:-report.pdf")
+        .appendingPathComponent(mailGatewayAttachmentStorageFilename(
+            attachmentId: "accountId:",
+            filename: "report.pdf"
+        ))
         .path
     try writeText(stringLiteralArgumentNamePath, "payload")
     let reorderedResult = runCli([

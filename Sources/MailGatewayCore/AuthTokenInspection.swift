@@ -6,6 +6,7 @@ struct TokenInspectionResult {
     let grantedAccessMode: AccessMode?
     let expiresAt: String?
     let hasRefreshToken: Bool
+    let emailAddress: String?
 }
 
 func inspectTokenStore(credential: CredentialConfig) -> TokenInspectionResult {
@@ -22,20 +23,22 @@ func inspectTokenStore(credential: CredentialConfig) -> TokenInspectionResult {
     }
 
     guard let data,
-          let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+          let tokenStore = try? JSONDecoder().decode(TokenInspectionStore.self, from: data) else {
         return invalidTokenResult()
     }
 
-    let accessMode = AccessMode(rawValue: parsed["accessMode"] as? String ?? "")
-    let refreshToken = parsed["refreshToken"] as? String
+    let accessMode = AccessMode(rawValue: tokenStore.accessMode ?? "")
+    let refreshToken = tokenStore.refreshToken
     let hasRefreshToken = refreshToken?.isEmpty == false
-    let expiresAt = (parsed["expiresAt"] as? String).flatMap(nonBlank)
+    let expiresAt = nonBlank(tokenStore.expiresAt)
+    let emailAddress = nonBlank(tokenStore.emailAddress)
 
     if let mismatch = scopeMismatchResult(
         grantedAccessMode: accessMode,
         configuredAccessMode: credential.accessMode,
         expiresAt: expiresAt,
-        hasRefreshToken: hasRefreshToken
+        hasRefreshToken: hasRefreshToken,
+        emailAddress: emailAddress
     ) {
         return mismatch
     }
@@ -43,7 +46,8 @@ func inspectTokenStore(credential: CredentialConfig) -> TokenInspectionResult {
     if let expiration = expirationResult(
         accessMode: accessMode,
         expiresAt: expiresAt,
-        hasRefreshToken: hasRefreshToken
+        hasRefreshToken: hasRefreshToken,
+        emailAddress: emailAddress
     ) {
         return expiration
     }
@@ -53,8 +57,16 @@ func inspectTokenStore(credential: CredentialConfig) -> TokenInspectionResult {
         exists: exists,
         grantedAccessMode: accessMode,
         expiresAt: expiresAt,
-        hasRefreshToken: hasRefreshToken
+        hasRefreshToken: hasRefreshToken,
+        emailAddress: emailAddress
     )
+}
+
+private struct TokenInspectionStore: Decodable {
+    let accessMode: String?
+    let refreshToken: String?
+    let expiresAt: String?
+    let emailAddress: String?
 }
 
 private func missingTokenResult() -> TokenInspectionResult {
@@ -63,7 +75,8 @@ private func missingTokenResult() -> TokenInspectionResult {
         exists: false,
         grantedAccessMode: nil,
         expiresAt: nil,
-        hasRefreshToken: false
+        hasRefreshToken: false,
+        emailAddress: nil
     )
 }
 
@@ -73,7 +86,8 @@ private func invalidTokenResult() -> TokenInspectionResult {
         exists: true,
         grantedAccessMode: nil,
         expiresAt: nil,
-        hasRefreshToken: false
+        hasRefreshToken: false,
+        emailAddress: nil
     )
 }
 
@@ -81,7 +95,8 @@ private func scopeMismatchResult(
     grantedAccessMode: AccessMode?,
     configuredAccessMode: AccessMode,
     expiresAt: String?,
-    hasRefreshToken: Bool
+    hasRefreshToken: Bool,
+    emailAddress: String?
 ) -> TokenInspectionResult? {
     guard let grantedAccessMode,
           grantedAccessMode != configuredAccessMode else {
@@ -92,14 +107,16 @@ private func scopeMismatchResult(
         exists: true,
         grantedAccessMode: grantedAccessMode,
         expiresAt: expiresAt,
-        hasRefreshToken: hasRefreshToken
+        hasRefreshToken: hasRefreshToken,
+        emailAddress: emailAddress
     )
 }
 
 private func expirationResult(
     accessMode: AccessMode?,
     expiresAt: String?,
-    hasRefreshToken: Bool
+    hasRefreshToken: Bool,
+    emailAddress: String?
 ) -> TokenInspectionResult? {
     guard let expiresAt else {
         return nil
@@ -110,7 +127,8 @@ private func expirationResult(
             exists: true,
             grantedAccessMode: accessMode,
             expiresAt: expiresAt,
-            hasRefreshToken: hasRefreshToken
+            hasRefreshToken: hasRefreshToken,
+            emailAddress: emailAddress
         )
     }
     guard expiresAtDate <= Date(),
@@ -122,7 +140,8 @@ private func expirationResult(
         exists: true,
         grantedAccessMode: accessMode,
         expiresAt: expiresAt,
-        hasRefreshToken: hasRefreshToken
+        hasRefreshToken: hasRefreshToken,
+        emailAddress: emailAddress
     )
 }
 

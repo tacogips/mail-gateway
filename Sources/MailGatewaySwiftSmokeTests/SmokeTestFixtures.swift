@@ -191,7 +191,7 @@ func containsEither(_ text: String, _ lhs: String, _ rhs: String) -> Bool {
 
 final class GmailRequestCaptureProtocol: URLProtocol {
     nonisolated(unsafe) static var capturedURLs: [URL] = []
-    nonisolated(unsafe) static var responseBody = #"{"messages":[],"resultSizeEstimate":0}"#
+    nonisolated(unsafe) static var responseBody = #"{"threads":[],"resultSizeEstimate":0}"#
 
     override static func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "gmail.googleapis.com"
@@ -221,6 +221,6 @@ final class GmailRequestCaptureProtocol: URLProtocol {
 
     static func reset() {
         capturedURLs = []
-        responseBody = #"{"messages":[],"resultSizeEstimate":0}"#
+        responseBody = #"{"threads":[],"resultSizeEstimate":0}"#
     }
 }

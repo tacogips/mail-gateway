@@ -33,6 +33,9 @@ public struct MailGatewayCLI {
             if shouldShowHelp(parsed) {
                 return helpResult(for: parsed)
             }
+            if shouldShowVersion(parsed) {
+                return versionResult()
+            }
             let configPath = try getStringFlag(parsed.flags, "config") ?? environment["MAIL_GATEWAY_CONFIG"]
             let pretty = try getBooleanFlag(parsed.flags, "pretty")
             return try runParsedCommand(
@@ -50,7 +53,7 @@ public struct MailGatewayCLI {
         } catch {
             let appError = MailGatewayError(
                 String(describing: error),
-                code: .configInvalid,
+                code: .unexpectedError,
                 exitCode: .generalError
             )
             return MailGatewayCommandResult(
@@ -63,6 +66,18 @@ public struct MailGatewayCLI {
 
     private func shouldShowHelp(_ parsed: ParsedArgs) -> Bool {
         parsed.flags["help"] != nil || parsed.positionals.first == "help"
+    }
+
+    private func shouldShowVersion(_ parsed: ParsedArgs) -> Bool {
+        parsed.flags["version"] != nil || parsed.positionals.first == "version"
+    }
+
+    private func versionResult() -> MailGatewayCommandResult {
+        MailGatewayCommandResult(
+            exitCode: MailGatewayExitCode.success.rawValue,
+            stdout: "\(mailGatewayVersion())\n",
+            stderr: ""
+        )
     }
 
     private func helpResult(for parsed: ParsedArgs) -> MailGatewayCommandResult {
@@ -139,9 +154,9 @@ public struct MailGatewayCLI {
         environment: [String: String],
         pretty: Bool
     ) throws -> MailGatewayCommandResult {
+        try rejectUnsupportedVariables(flags: flags)
         let config = try MailGatewayConfigLoader.loadConfig(configPath: configPath, environment: environment)
         let query = try loadQuery(flags: flags)
-        _ = try loadVariables(flags: flags)
         let result: (body: [String: Any], exitCode: MailGatewayExitCode)
         switch mode {
         case .reader:
@@ -286,8 +301,8 @@ public struct MailGatewayCLI {
     private func readerService(
         configPath: String?,
         environment: [String: String]
-    ) throws -> MailGatewayReaderService {
-        MailGatewayReaderService(
+    ) throws -> MailGatewayService {
+        MailGatewayService(
             config: try MailGatewayConfigLoader.loadConfig(configPath: configPath, environment: environment)
         )
     }
@@ -331,6 +346,7 @@ Commands:
   auth <login|revoke|status> --credential <id>
   cache prune [--account <id>|--all]
   file download --key <download-key> [--key <download-key> ...] [--output-dir <dir>]
+  --version
 
 Auth login options:
   --redirect-uri <uri>       Optional http://127.0.0.1:<port>/<path> callback URI.

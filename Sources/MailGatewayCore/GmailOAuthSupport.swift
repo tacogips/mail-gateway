@@ -55,6 +55,44 @@ private enum GmailRefreshPersistencePolicy {
     case required
 }
 
+private struct GmailTokenRefreshResponse: Decodable {
+    let accessToken: String?
+    let tokenType: String?
+    let scope: String?
+    let expiresIn: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case tokenType = "token_type"
+        case scope
+        case expiresIn = "expires_in"
+    }
+
+    func normalized() -> GmailTokenRefreshResponse {
+        GmailTokenRefreshResponse(
+            accessToken: nonBlank(accessToken),
+            tokenType: nonBlank(tokenType),
+            scope: nonBlank(scope),
+            expiresIn: expiresIn
+        )
+    }
+}
+
+private struct GoogleProviderErrorResponse: Decodable {
+    let error: GoogleProviderError?
+}
+
+private struct GoogleProviderError: Decodable {
+    let code: Int?
+    let status: String?
+    let message: String?
+    let errors: [GoogleProviderErrorReason]?
+}
+
+private struct GoogleProviderErrorReason: Decodable {
+    let reason: String?
+}
+
 private enum GoogleOAuthClientSource {
     case installed
     case web
@@ -113,6 +151,33 @@ func validGmailAccessToken(
 }
 
 func performGmailHTTPRequest(_ request: URLRequest, context: String) throws -> (data: Data, response: HTTPURLResponse) {
+    let maxAttempts = gmailHTTPMaxAttempts(for: request)
+    var attempt = 1
+    while true {
+        let resolved = try performSingleGmailHTTPRequest(request, context: context)
+        if (200..<300).contains(resolved.response.statusCode) {
+            return resolved
+        }
+        if attempt < maxAttempts,
+           gmailHTTPStatusIsRetryable(resolved.response.statusCode) {
+            Thread.sleep(forTimeInterval: gmailHTTPRetryDelay(attempt: attempt))
+            attempt += 1
+            continue
+        }
+        let code: MailGatewayErrorCode = resolved.response.statusCode == 429 ? .providerRateLimited : .providerApiError
+        throw MailGatewayError(
+            context,
+            code: code,
+            exitCode: .providerApiError,
+            details: gmailProviderErrorDetails(statusCode: resolved.response.statusCode, data: resolved.data)
+        )
+    }
+}
+
+private func performSingleGmailHTTPRequest(
+    _ request: URLRequest,
+    context: String
+) throws -> (data: Data, response: HTTPURLResponse) {
     let semaphore = DispatchSemaphore(value: 0)
     let box = HTTPResultBox()
     URLSession.shared.dataTask(with: request) { data, response, error in
@@ -155,18 +220,45 @@ func performGmailHTTPRequest(_ request: URLRequest, context: String) throws -> (
             details: ["cause": error.localizedDescription]
         )
     }
-
-    guard (200..<300).contains(resolved.response.statusCode) else {
-        let body = String(data: resolved.data, encoding: .utf8) ?? ""
-        let code: MailGatewayErrorCode = resolved.response.statusCode == 429 ? .providerRateLimited : .providerApiError
-        throw MailGatewayError(
-            context,
-            code: code,
-            exitCode: .providerApiError,
-            details: ["httpStatus": String(resolved.response.statusCode), "body": String(body.prefix(1_000))]
-        )
-    }
     return resolved
+}
+
+private func gmailHTTPMaxAttempts(for request: URLRequest) -> Int {
+    let method = request.httpMethod?.uppercased() ?? "GET"
+    return method == "GET" ? 3 : 1
+}
+
+private func gmailHTTPStatusIsRetryable(_ statusCode: Int) -> Bool {
+    statusCode == 429 || (500...599).contains(statusCode)
+}
+
+private func gmailHTTPRetryDelay(attempt: Int) -> TimeInterval {
+    0.05 * Double(attempt)
+}
+
+private func gmailProviderErrorDetails(statusCode: Int, data: Data) -> [String: String] {
+    var details = ["httpStatus": String(statusCode)]
+    guard let error = try? JSONDecoder().decode(GoogleProviderErrorResponse.self, from: data).error else {
+        if let body = String(data: data, encoding: .utf8),
+           !body.isEmpty {
+            details["bodySnippet"] = String(body.prefix(1_000))
+        }
+        return details
+    }
+
+    if let code = error.code {
+        details["providerErrorCode"] = String(code)
+    }
+    if let status = error.status {
+        details["providerErrorStatus"] = String(status.prefix(200))
+    }
+    if let message = error.message {
+        details["providerErrorMessage"] = String(message.prefix(500))
+    }
+    if let reason = error.errors?.first?.reason {
+        details["providerErrorReason"] = String(reason.prefix(200))
+    }
+    return details
 }
 
 private final class HTTPResultBox: @unchecked Sendable {
@@ -397,8 +489,18 @@ private func refreshGmailAccessToken(
     request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
     request.httpBody = formURLEncoded(fields).data(using: .utf8)
     let response = try performGmailHTTPRequest(request, context: "Gmail token refresh failed")
-    guard let object = try JSONSerialization.jsonObject(with: response.data) as? [String: Any],
-          let accessToken = nonBlank(object["access_token"] as? String) else {
+    let tokenResponse: GmailTokenRefreshResponse
+    do {
+        tokenResponse = try JSONDecoder().decode(GmailTokenRefreshResponse.self, from: response.data).normalized()
+    } catch {
+        throw MailGatewayError(
+            "Gmail token refresh response did not include an access token",
+            code: .authRequired,
+            exitCode: .graphqlExecutionError,
+            details: ["credentialId": credential.id]
+        )
+    }
+    guard let accessToken = nonBlank(tokenResponse.accessToken) else {
         throw MailGatewayError(
             "Gmail token refresh response did not include an access token",
             code: .authRequired,
@@ -411,9 +513,9 @@ private func refreshGmailAccessToken(
         accessMode: tokenStore.accessMode,
         accessToken: accessToken,
         refreshToken: tokenStore.refreshToken,
-        tokenType: nonBlank(object["token_type"] as? String) ?? tokenStore.tokenType,
-        scope: nonBlank(object["scope"] as? String) ?? tokenStore.scope,
-        expiresAt: intValue(object["expires_in"]).map {
+        tokenType: tokenResponse.tokenType ?? tokenStore.tokenType,
+        scope: tokenResponse.scope ?? tokenStore.scope,
+        expiresAt: tokenResponse.expiresIn.map {
             ISO8601DateFormatter().string(from: Date().addingTimeInterval(TimeInterval($0)))
         },
         emailAddress: tokenStore.emailAddress

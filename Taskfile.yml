@@ -22,9 +22,11 @@ tasks:
       - swift run {{.EXECUTABLE_NAME}} {{.CLI_ARGS}}
 
   test:
-    desc: Run Swift tests
+    desc: Run Swift tests and smoke tests
     cmds:
       - swift test
+      - swift build --target MailGatewaySwiftSmokeTests
+      - .build/debug/mail-gateway-swift-smoke-tests
 
   clean:
     desc: Clean SwiftPM and release artifacts

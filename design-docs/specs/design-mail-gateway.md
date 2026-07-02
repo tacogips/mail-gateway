@@ -21,8 +21,10 @@ All business operations are exposed through GraphQL. The CLI surface exists only
 - Allow each account to reference a different Gmail credential set and token store
 - Make account selection explicit for read operations
 - Model all read operations through GraphQL in Phase 1
-- Materialize attachments to local files and return their paths through an explicit hydration query
-- Exchange attachments only as files and local paths so AI callers do not consume tokens on binary payloads
+- Return body, attachment, and temporary-file metadata through GraphQL using
+  `downloadKey` values instead of payload bytes
+- Exchange binary and body payloads only through explicit gateway file download
+  commands so AI callers do not consume tokens on large payloads
 - Keep the provider layer extensible so Gmail is only the first adapter
 
 ## Non-Goals
@@ -44,15 +46,19 @@ All business operations are exposed through GraphQL. The CLI surface exists only
 | `mail-gateway-draft` | Planned for Phase 2 | Draft only by default | `Query` and draft-backed `Mutation` |
 | `mail-gateway-sender` | Planned for Phase 2 | Yes, explicit direct send and draft creation | `Query`, direct-send `Mutation`, and draft `Mutation` |
 
-`mail-gateway-reader` must fail fast if a send mutation is submitted. This is enforced by exposing a reduced schema rather than only checking at resolver runtime.
+`mail-gateway-reader` must fail fast if a send mutation is submitted. The current CLI GraphQL executor enforces this by rejecting write root fields before resolver dispatch with `SEND_DISABLED_IN_READER`; it does not yet expose a separate reduced GraphQL schema.
 
 ### GraphQL Transport Modes
 
 The primary mode is a one-shot CLI invocation:
 
 ```bash
-mail-gateway-reader graphql --query-file ./query.graphql --variables-file ./vars.json
+mail-gateway-reader graphql --query-file ./query.graphql
 ```
+
+`--variables` and `--variables-file` are reserved for a future GraphQL
+execution engine and are rejected by the current CLI with a clear unsupported
+error.
 
 An optional long-running mode may be added later:
 
@@ -146,9 +152,10 @@ default_label_ids = ["INBOX", "IMPORTANT"]
 - provider-specific details are exposed in a namespaced way only when the canonical model is insufficient
 - draft creation exists in `mail-gateway-draft`
 - direct send operations exist only in `mail-gateway-sender`
-- filesystem materialization paths are returned only by explicit gateway download
-  commands, not by GraphQL message-file metadata
-- nested thread and message queries return attachment metadata only; explicit hydration is performed only through `attachment(...)`
+- filesystem materialization paths are returned only by explicit gateway
+  download commands, not by GraphQL message or file metadata
+- nested thread and message queries return metadata only; payload retrieval is
+  performed only through explicit gateway download commands
 - attachment payloads are never inlined into GraphQL responses
 - body and temporary-file payloads are never inlined into GraphQL responses;
   GraphQL returns vendor-neutral `downloadKey` metadata, and file bytes are
@@ -188,9 +195,6 @@ input ThreadSearchInput {
   query: String
   starred: Boolean
   labelIds: [String!]
-  unread: Boolean
-  from: [String!]
-  hasAttachments: Boolean
   direction: MailDirectionFilter
   receivedAfter: DateTime
   receivedBefore: DateTime
@@ -220,9 +224,24 @@ structured filters using AND semantics. For Gmail-backed accounts,
 provided, configured default label filters are preserved except that
 `direction: SENT` does not apply the default inbox label filter.
 
+The current implementation rejects unsupported thread-search fields rather
+than silently ignoring them. Future schema additions may include
+`unread: Boolean`, `from: [String!]`, and `hasAttachments: Boolean`; until
+implemented, those fields fail with `INVALID_ARGUMENT`.
+
 ### Core Domain Types
 
 ```graphql
+scalar DateTime
+
+enum MailProvider {
+  GMAIL
+}
+
+type MailAddress {
+  raw: String!
+}
+
 type MailAccount {
   id: ID!
   provider: MailProvider!
@@ -258,8 +277,6 @@ type MailMessage {
   replyTo: [MailAddress!]!
   sentAt: DateTime
   receivedAt: DateTime
-  textBody: String
-  htmlBody: String
   attachments: [MailAttachment!]!
   providerMetadata: ProviderMetadata
 }
@@ -269,7 +286,6 @@ type MailAttachment {
   filename: String
   mimeType: String!
   sizeBytes: Int
-  localPath: String
   downloadKey: String
   materializationState: AttachmentMaterializationState!
 }
@@ -344,15 +360,31 @@ enum AuthState {
 }
 ```
 
+`DateTime` is an ISO 8601/RFC 3339 timestamp string when the provider supplies
+timestamp precision. If only an RFC 5322 mail header date is available, the
+gateway normalizes it to the same timestamp format before returning it.
+
+`MailAddress.raw` preserves the provider/header address string. Parsed display
+names and mailbox fields can be added later without changing the raw fallback.
+
+`MailProvider`, `AccessMode`, and `AuthState` are GraphQL enums. Configuration
+uses lower-case provider/access values such as `gmail`, `read`, and `read_send`;
+GraphQL responses use the upper-case enum values shown above.
+
 ### Query Semantics
 
 - `threads` requires `accountId` within `ThreadSearchInput`
 - pagination uses cursor-based connections
 - ordering is descending by most recent provider thread activity, with provider thread ID as a stable tie-breaker
 - cursors are valid only for the same account and identical filter set
-- the canonical search model supports label filters, free text, unread state, sender filters, attachment-presence filters, sent-vs-received direction filters, and time range
-- `from` filters by sender address or addresses
-- `hasAttachments: true` limits results to messages with at least one attachment; `false` limits results to messages without attachments
+- the current search model supports label filters, free text, starred state,
+  sent-vs-received direction filters, and time range
+- unsupported search fields are rejected with a GraphQL error rather than
+  being ignored
+- `MailMessage` returns message metadata and attachment metadata only.
+  `messageFileSet.files` and `MailAttachment.downloadKey` describe
+  downloadable content but do not expose body text, HTML, bytes, or local
+  filesystem paths.
 
 ### Outbound Mutation Semantics
 
@@ -450,7 +482,9 @@ Canonical mapping rules:
 - Gmail thread ID maps to `MailThread.id`
 - Gmail message ID maps to `MailMessage.id`
 - Gmail labels map to canonical `labels`
-- Gmail message part tree is normalized into `textBody`, `htmlBody`, and `attachments`
+- Gmail message part tree is normalized into message-file metadata and
+  attachments; body payloads are retrieved through `messageFileSet` download
+  keys and explicit `file download` commands
 
 ## Authentication and Authorization
 
@@ -485,26 +519,30 @@ GraphQL errors should be structured with machine-readable extension codes:
 - `ATTACHMENT_NOT_FOUND`
 - `CREDENTIAL_NOT_FOUND`
 - `AUTH_REQUIRED`
+- `FILE_OPERATION_FAILED`
+- `INVALID_DOWNLOAD_KEY`
 - `PROVIDER_RATE_LIMITED`
 - `MESSAGE_NOT_FOUND`
 - `AUTH_BOOTSTRAP_NOT_IMPLEMENTED`
 - `SEND_NOT_SUPPORTED`
 - `SEND_DISABLED_IN_READER`
 - `CONFIG_INVALID`
+- `UNEXPECTED_ERROR`
 
 ### Logging
 
-- default logs go to stderr
+- default structured CLI errors go to stderr
 - GraphQL responses go to stdout in CLI mode
-- each request receives a request ID for correlation
-- provider API request IDs are logged when available
+- error objects include a generated `requestId` for caller-side correlation
+- provider API request IDs should be captured when providers expose them
 
 ## Security Constraints
 
 - the reader binary must not expose write resolvers
 - direct send resolvers must be reachable only through `mail-gateway-sender`
 - `mail-gateway-sender` may also expose draft resolvers, but draft resolvers must not send mail
-- file paths returned in GraphQL must always be normalized under configured storage roots
+- file paths returned by gateway download commands must always be normalized
+  under configured storage roots or an allowed output directory
 - attachment filenames must be sanitized to prevent path traversal or control-character issues
 - sending attachments must read only explicit local paths supplied by the caller and only from configured allowlist roots
 - provider-specific raw MIME submission must be deferred unless validation rules are defined

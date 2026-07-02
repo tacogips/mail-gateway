@@ -1,81 +1,95 @@
 import Foundation
 
+struct GmailThreadSearchRequest {
+    let account: AccountConfig
+    let credential: CredentialConfig
+    let query: String?
+    let starred: Bool
+    let direction: ThreadSearchDirection?
+    let labelIds: [String]?
+    let receivedAfter: String?
+    let receivedBefore: String?
+    let first: Int
+    let after: String?
+    let includeEdges: Bool
+    let includeNodeDetails: Bool
+    let includeFullNodeDetails: Bool
+}
+
+struct GmailMessageBodyFile {
+    let kind: MessageMaterializedFileKind
+    let filename: String
+    let mimeType: String
+    let data: Data
+}
+
 struct GmailLiveReader {
-    func searchThreads(
-        account: AccountConfig,
-        credential: CredentialConfig,
-        query: String?,
-        starred: Bool,
-        direction: ThreadSearchDirection?,
-        labelIds: [String]?,
-        receivedAfter: String?,
-        receivedBefore: String?,
-        includeEdges: Bool,
-        includeNodeDetails: Bool
-    ) throws -> [String: Any] {
-        let accessToken = try validGmailAccessToken(credential: credential, use: .read)
-        let listed = try listMessages(
-            account: account,
+    func searchThreads(_ request: GmailThreadSearchRequest) throws -> MailThreadConnection {
+        let accessToken = try validGmailAccessToken(credential: request.credential, use: .read)
+        let listed = try listThreads(
+            account: request.account,
             accessToken: accessToken,
-            query: query,
-            starred: starred,
-            direction: direction,
-            labelIds: labelIds,
-            receivedAfter: receivedAfter,
-            receivedBefore: receivedBefore
+            query: request.query,
+            starred: request.starred,
+            direction: request.direction,
+            labelIds: request.labelIds,
+            receivedAfter: request.receivedAfter,
+            receivedBefore: request.receivedBefore,
+            maxResults: request.first,
+            pageToken: request.after
         )
-        let pageInfo: [String: Any] = [
-            "hasNextPage": listed.nextPageToken != nil,
-            "endCursor": listed.nextPageToken as Any? ?? NSNull()
-        ]
-        guard includeEdges else {
-            return [
-                "edges": [[String: Any]](),
-                "pageInfo": pageInfo,
-                "totalCount": listed.resultSizeEstimate ?? listed.messages.count
-            ]
+        let pageInfo = MailPageInfo(hasNextPage: listed.nextPageToken != nil, endCursor: listed.nextPageToken)
+        guard request.includeEdges else {
+            return MailThreadConnection(
+                edges: [],
+                pageInfo: pageInfo,
+                totalCount: listed.resultSizeEstimate ?? listed.threads.count
+            )
         }
 
-        var seenThreads: Set<String> = []
-        var edges: [[String: Any]] = []
+        var edges: [MailThreadEdge] = []
 
-        for item in listed.messages {
-            guard !seenThreads.contains(item.threadId) else {
-                continue
+        for item in listed.threads {
+            let node: MailThread?
+            if request.includeNodeDetails {
+                if request.includeFullNodeDetails {
+                    node = try getThreadFull(threadId: item.id, account: request.account, accessToken: accessToken)
+                } else {
+                    node = buildListedThread(account: request.account, item: item)
+                }
+            } else {
+                node = nil
             }
-            seenThreads.insert(item.threadId)
-            var edge: [String: Any] = ["cursor": item.id]
-            if includeNodeDetails {
-                let message = try getMessageFull(messageId: item.id, account: account, accessToken: accessToken)
-                edge["node"] = buildThread(account: account, threadId: item.threadId, messages: [message])
-            }
-            edges.append(edge)
+            edges.append(MailThreadEdge(cursor: item.id, node: node))
         }
 
-        return [
-            "edges": edges,
-            "pageInfo": pageInfo,
-            "totalCount": listed.resultSizeEstimate ?? edges.count
-        ]
-    }
-
-    func getThread(account: AccountConfig, credential: CredentialConfig, threadId: String) throws -> Any {
-        let accessToken = try validGmailAccessToken(credential: credential, use: .read)
-        var components = gmailURLComponents(path: "/gmail/v1/users/me/threads/\(urlPathEncode(threadId))")
-        components.queryItems = fullQueryItems()
-        let object = try getGmailJSONObject(
-            components: components,
-            accessToken: accessToken,
-            context: "Gmail thread retrieval failed"
+        return MailThreadConnection(
+            edges: edges,
+            pageInfo: pageInfo,
+            totalCount: listed.resultSizeEstimate ?? edges.count
         )
-        let messages = (object["messages"] as? [[String: Any]] ?? [])
-            .map { buildMessage(account: account, object: $0) }
-        return buildThread(account: account, threadId: threadId, messages: messages)
     }
 
-    func getMessage(account: AccountConfig, credential: CredentialConfig, messageId: String) throws -> Any {
+    func getThread(account: AccountConfig, credential: CredentialConfig, threadId: String) throws -> MailThread {
+        let accessToken = try validGmailAccessToken(credential: credential, use: .read)
+        return try getThreadFull(threadId: threadId, account: account, accessToken: accessToken)
+    }
+
+    func getMessage(account: AccountConfig, credential: CredentialConfig, messageId: String) throws -> MailMessage {
         let accessToken = try validGmailAccessToken(credential: credential, use: .read)
         return try getMessageFull(messageId: messageId, account: account, accessToken: accessToken)
+    }
+
+    func getMessageBodyFiles(
+        credential: CredentialConfig,
+        messageId: String
+    ) throws -> [GmailMessageBodyFile] {
+        let accessToken = try validGmailAccessToken(credential: credential, use: .read)
+        let object = try getGmailMessageObject(messageId: messageId, accessToken: accessToken)
+        guard let payload = object.payload else {
+            return []
+        }
+        return parseGmailBodyFiles(payload)
     }
 
     func getAttachment(
@@ -83,71 +97,59 @@ struct GmailLiveReader {
         credential: CredentialConfig,
         messageId: String,
         attachmentId: String
-    ) throws -> Any {
+    ) throws -> MailAttachment {
         let accessToken = try validGmailAccessToken(credential: credential, use: .read)
         let message = try getMessageFull(messageId: messageId, account: account, accessToken: accessToken)
-        let attachments = message["attachments"] as? [[String: Any]] ?? []
-        let attachment = attachments.first(where: { item in
-            guard let gmail = (item["providerMetadata"] as? [String: Any])?["gmail"] as? [String: Any] else {
-                return item["id"] as? String == attachmentId
-            }
-            return gmail["attachmentId"] as? String == attachmentId || item["id"] as? String == attachmentId
+        let attachment = message.attachments.first(where: { item in
+            item.providerMetadata?.gmail?.attachmentId == attachmentId || item.id == attachmentId
         })
 
-        var components = gmailURLComponents(
-            path: "/gmail/v1/users/me/messages/\(urlPathEncode(messageId))/attachments/\(urlPathEncode(attachmentId))"
-        )
-        components.queryItems = nil
-        let object = try getGmailJSONObject(
-            components: components,
-            accessToken: accessToken,
-            context: "Gmail attachment retrieval failed"
-        )
-        let remoteSize = intValue(object["size"]) ?? nonBlank(object["data"] as? String)
-            .flatMap(dataFromBase64URLString)?
-            .count
-        let resolvedAttachment = attachment ?? remoteSize.flatMap { size in
-            attachments.first { intValue($0["sizeBytes"]) == size }
-        }
-
-        var resolved = resolvedAttachment ?? [
-            "id": attachmentId,
-            "filename": NSNull(),
-            "mimeType": "application/octet-stream",
-            "sizeBytes": NSNull(),
-            "localPath": NSNull(),
-            "materializationState": AttachmentMaterializationState.notMaterialized.rawValue,
-            "providerMetadata": [
-                "gmail": [
-                    "accountId": account.id,
-                    "messageId": messageId,
-                    "threadId": message["threadId"] as? String ?? "",
-                    "attachmentId": attachmentId,
-                    "partId": NSNull()
-                ] as [String: Any]
-            ]
-        ]
-        resolved["id"] = attachmentId
-        resolved["messageId"] = messageId
-        resolved["accountId"] = account.id
-        if var providerMetadata = resolved["providerMetadata"] as? [String: Any],
-           var gmailMetadata = providerMetadata["gmail"] as? [String: Any] {
-            gmailMetadata["attachmentId"] = attachmentId
-            providerMetadata["gmail"] = gmailMetadata
-            resolved["providerMetadata"] = providerMetadata
-        }
-        if resolved["sizeBytes"] is NSNull,
-           let remoteSize {
-            resolved["sizeBytes"] = remoteSize
-        }
-        resolved["downloadKey"] = attachmentDownloadKey(
+        let base = attachment ?? MailAttachment(
+            id: attachmentId,
             accountId: account.id,
             messageId: messageId,
-            attachmentId: attachmentId,
-            filename: resolved["filename"] as? String,
-            mimeType: resolved["mimeType"] as? String
-        ) as Any? ?? NSNull()
-        return resolved
+            filename: nil,
+            mimeType: "application/octet-stream",
+            sizeBytes: nil,
+            localPath: nil,
+            downloadKey: nil,
+            materializationState: .notMaterialized,
+            providerMetadata: MailProviderMetadata(gmail: GmailMailMetadata(
+                accountId: account.id,
+                messageId: messageId,
+                threadId: message.threadId,
+                attachmentId: attachmentId,
+                partId: nil,
+                labelIds: nil,
+                historyId: nil
+            ))
+        )
+        return MailAttachment(
+            id: attachmentId,
+            accountId: account.id,
+            messageId: messageId,
+            filename: base.filename,
+            mimeType: base.mimeType,
+            sizeBytes: base.sizeBytes,
+            localPath: base.localPath,
+            downloadKey: attachmentDownloadKey(
+                accountId: account.id,
+                messageId: messageId,
+                attachmentId: attachmentId,
+                filename: base.filename,
+                mimeType: base.mimeType
+            ),
+            materializationState: base.materializationState,
+            providerMetadata: MailProviderMetadata(gmail: GmailMailMetadata(
+                accountId: account.id,
+                messageId: messageId,
+                threadId: message.threadId,
+                attachmentId: attachmentId,
+                partId: base.providerMetadata?.gmail?.partId,
+                labelIds: nil,
+                historyId: nil
+            ))
+        )
     }
 
     func getAttachmentPayload(
@@ -160,12 +162,13 @@ struct GmailLiveReader {
             path: "/gmail/v1/users/me/messages/\(urlPathEncode(messageId))/attachments/\(urlPathEncode(attachmentId))"
         )
         components.queryItems = nil
-        let object = try getGmailJSONObject(
+        let object = try getGmailObject(
             components: components,
             accessToken: accessToken,
-            context: "Gmail attachment retrieval failed"
+            context: "Gmail attachment retrieval failed",
+            as: GmailAttachmentPayloadResponse.self
         )
-        guard let encoded = nonBlank(object["data"] as? String),
+        guard let encoded = nonBlank(object.data),
               let data = dataFromBase64URLString(encoded) else {
             throw MailGatewayError(
                 "Gmail attachment response did not include decodable payload data",
@@ -177,18 +180,19 @@ struct GmailLiveReader {
     }
 }
 
-private struct GmailListedMessages {
-    let messages: [GmailListedMessage]
+private struct GmailListedThreads {
+    let threads: [GmailListedThread]
     let nextPageToken: String?
     let resultSizeEstimate: Int?
 }
 
-private struct GmailListedMessage {
+private struct GmailListedThread {
     let id: String
-    let threadId: String
+    let snippet: String?
+    let historyId: String?
 }
 
-private func listMessages(
+private func listThreads(
     account: AccountConfig,
     accessToken: String,
     query: String?,
@@ -196,12 +200,17 @@ private func listMessages(
     direction: ThreadSearchDirection?,
     labelIds: [String]?,
     receivedAfter: String?,
-    receivedBefore: String?
-) throws -> GmailListedMessages {
-    var components = gmailURLComponents(path: "/gmail/v1/users/me/messages")
+    receivedBefore: String?,
+    maxResults: Int,
+    pageToken: String?
+) throws -> GmailListedThreads {
+    var components = gmailURLComponents(path: "/gmail/v1/users/me/threads")
     var queryItems = [
-        URLQueryItem(name: "maxResults", value: "10")
+        URLQueryItem(name: "maxResults", value: String(maxResults))
     ]
+    if let pageToken {
+        queryItems.append(URLQueryItem(name: "pageToken", value: pageToken))
+    }
     if let query = gmailMessageSearchQuery(
         query: query,
         starred: starred,
@@ -215,22 +224,46 @@ private func listMessages(
         queryItems.append(URLQueryItem(name: "labelIds", value: labelId))
     }
     components.queryItems = queryItems
-    let object = try getGmailJSONObject(
+    let object = try getGmailObject(
         components: components,
         accessToken: accessToken,
-        context: "Gmail message list failed"
+        context: "Gmail thread list failed",
+        as: GmailThreadListResponse.self
     )
-    let messages = (object["messages"] as? [[String: Any]] ?? []).compactMap { item -> GmailListedMessage? in
-        guard let id = nonBlank(item["id"] as? String),
-              let threadId = nonBlank(item["threadId"] as? String) else {
+    let threads = (object.threads ?? []).compactMap { item -> GmailListedThread? in
+        guard let id = nonBlank(item.id) else {
             return nil
         }
-        return GmailListedMessage(id: id, threadId: threadId)
+        return GmailListedThread(
+            id: id,
+            snippet: nonBlank(item.snippet),
+            historyId: nonBlank(item.historyId)
+        )
     }
-    return GmailListedMessages(
-        messages: messages,
-        nextPageToken: nonBlank(object["nextPageToken"] as? String),
-        resultSizeEstimate: intValue(object["resultSizeEstimate"])
+    return GmailListedThreads(
+        threads: threads,
+        nextPageToken: nonBlank(object.nextPageToken),
+        resultSizeEstimate: object.resultSizeEstimate
+    )
+}
+
+private func buildListedThread(account: AccountConfig, item: GmailListedThread) -> MailThread {
+    MailThread(
+        id: item.id,
+        accountId: account.id,
+        subject: nil,
+        snippet: item.snippet,
+        messages: [],
+        labels: [],
+        providerMetadata: MailProviderMetadata(gmail: GmailMailMetadata(
+            accountId: nil,
+            messageId: nil,
+            threadId: nil,
+            attachmentId: nil,
+            partId: nil,
+            labelIds: [],
+            historyId: item.historyId
+        ))
     )
 }
 
@@ -283,6 +316,10 @@ private func gmailSearchDateTerm(prefix: String, value: String?) -> String? {
     guard let value = nonBlank(value) else {
         return nil
     }
+    if value.contains("T"),
+       let date = parseISO8601SearchDate(value) {
+        return "\(prefix):\(Int(date.timeIntervalSince1970))"
+    }
     let normalized = value.replacingOccurrences(of: "-", with: "/")
     if normalized.count >= 10 {
         let endIndex = normalized.index(normalized.startIndex, offsetBy: 10)
@@ -292,6 +329,16 @@ private func gmailSearchDateTerm(prefix: String, value: String?) -> String? {
         }
     }
     return "\(prefix):\(normalized)"
+}
+
+private func parseISO8601SearchDate(_ value: String) -> Date? {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = formatter.date(from: value) {
+        return date
+    }
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter.date(from: value)
 }
 
 private func isGmailSearchDate(_ value: String) -> Bool {
@@ -305,22 +352,59 @@ private func isGmailSearchDate(_ value: String) -> Bool {
     return parts.allSatisfy { part in part.allSatisfy(\.isNumber) }
 }
 
-private func getMessageFull(messageId: String, account: AccountConfig, accessToken: String) throws -> [String: Any] {
-    var components = gmailURLComponents(path: "/gmail/v1/users/me/messages/\(urlPathEncode(messageId))")
-    components.queryItems = fullQueryItems()
-    let object = try getGmailJSONObject(
-        components: components,
-        accessToken: accessToken,
-        context: "Gmail message retrieval failed"
-    )
-    return buildMessage(account: account, object: object)
+private func getMessageFull(messageId: String, account: AccountConfig, accessToken: String) throws -> MailMessage {
+    let object = try getGmailMessageObject(messageId: messageId, accessToken: accessToken)
+    return buildMailMessage(account: account, object: object)
 }
 
-private func getGmailJSONObject(
+private func getThreadFull(threadId: String, account: AccountConfig, accessToken: String) throws -> MailThread {
+    var components = gmailURLComponents(path: "/gmail/v1/users/me/threads/\(urlPathEncode(threadId))")
+    components.queryItems = fullQueryItems()
+    let object = try getGmailObject(
+        components: components,
+        accessToken: accessToken,
+        context: "Gmail thread retrieval failed",
+        as: GmailAPIThread.self
+    )
+    let messages = (object.messages ?? [])
+        .map { buildMailMessage(account: account, object: $0) }
+    return buildThread(account: account, threadId: object.id ?? threadId, messages: messages)
+}
+
+private func getGmailMessageObject(messageId: String, accessToken: String) throws -> GmailAPIMessage {
+    var components = gmailURLComponents(path: "/gmail/v1/users/me/messages/\(urlPathEncode(messageId))")
+    components.queryItems = fullQueryItems()
+    return try getGmailObject(
+        components: components,
+        accessToken: accessToken,
+        context: "Gmail message retrieval failed",
+        as: GmailAPIMessage.self
+    )
+}
+
+private func getGmailObject<T: Decodable>(
+    components: URLComponents,
+    accessToken: String,
+    context: String,
+    as type: T.Type
+) throws -> T {
+    let data = try getGmailData(components: components, accessToken: accessToken, context: context)
+    do {
+        return try JSONDecoder().decode(type, from: data)
+    } catch {
+        throw MailGatewayError(
+            "Gmail API response was not a JSON object",
+            code: .providerApiError,
+            exitCode: .providerApiError
+        )
+    }
+}
+
+private func getGmailData(
     components: URLComponents,
     accessToken: String,
     context: String
-) throws -> [String: Any] {
+) throws -> Data {
     guard let url = components.url else {
         throw MailGatewayError(
             "Failed to construct Gmail API URL",
@@ -333,70 +417,110 @@ private func getGmailJSONObject(
     request.timeoutInterval = 30
     request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
     let response = try performGmailHTTPRequest(request, context: context)
-    guard let object = try JSONSerialization.jsonObject(with: response.data) as? [String: Any] else {
-        throw MailGatewayError(
-            "Gmail API response was not a JSON object",
-            code: .providerApiError,
-            exitCode: .providerApiError
-        )
-    }
-    return object
+    return response.data
 }
 
-private func buildThread(account: AccountConfig, threadId: String, messages: [[String: Any]]) -> [String: Any] {
-    let labels = uniqueStrings(messages.flatMap { $0["labels"] as? [String] ?? [] })
-    return [
-        "id": threadId,
-        "accountId": account.id,
-        "subject": messages.first?["subject"] as? String ?? NSNull(),
-        "snippet": messages.first?["snippet"] as? String ?? NSNull(),
-        "messages": messages,
-        "labels": labels,
-        "providerMetadata": [
-            "gmail": [
-                "labelIds": labels,
-                "historyId": messages.first?["historyId"] as? String ?? NSNull()
-            ] as [String: Any]
-        ]
-    ]
+private func buildThread(account: AccountConfig, threadId: String, messages: [MailMessage]) -> MailThread {
+    let labels = uniqueStrings(messages.flatMap(\.labels))
+    return MailThread(
+        id: threadId,
+        accountId: account.id,
+        subject: messages.first?.subject,
+        snippet: messages.first?.snippet,
+        messages: messages,
+        labels: labels,
+        providerMetadata: MailProviderMetadata(gmail: GmailMailMetadata(
+            accountId: nil,
+            messageId: nil,
+            threadId: nil,
+            attachmentId: nil,
+            partId: nil,
+            labelIds: labels,
+            historyId: messages.first?.historyId
+        ))
+    )
 }
 
-private func buildMessage(account: AccountConfig, object: [String: Any]) -> [String: Any] {
+func buildMessage(account: AccountConfig, object: [String: Any]) -> [String: Any] {
+    buildMailMessage(account: account, object: object).graphQLObject()
+}
+
+private func buildMailMessage(account: AccountConfig, object: [String: Any]) -> MailMessage {
     let headers = gmailHeaders(object)
     let labelIds = object["labelIds"] as? [String] ?? []
     let internalDate = nonBlank(object["internalDate"] as? String).flatMap(millisecondsDateString)
     let payload = object["payload"] as? [String: Any]
     let parsedPayload = payload.map(parseGmailPayload) ?? GmailParsedPayload()
-    return [
-        "id": object["id"] as? String ?? "",
-        "threadId": object["threadId"] as? String ?? "",
-        "accountId": account.id,
-        "subject": headers["subject"] ?? NSNull(),
-        "from": mailAddressList(headers["from"]),
-        "to": mailAddressList(headers["to"]),
-        "cc": mailAddressList(headers["cc"]),
-        "bcc": mailAddressList(headers["bcc"]),
-        "replyTo": mailAddressList(headers["reply-to"]),
-        "sentAt": parseMailDate(headers["date"]) as Any? ?? internalDate as Any? ?? NSNull(),
-        "receivedAt": internalDate as Any? ?? NSNull(),
-        "snippet": object["snippet"] as? String ?? NSNull(),
-        "textBody": parsedPayload.textBody as Any? ?? NSNull(),
-        "htmlBody": parsedPayload.htmlBody as Any? ?? NSNull(),
-        "attachments": parsedPayload.attachments.map { buildAttachment(account: account, message: object, part: $0) },
-        "labels": labelIds,
-        "historyId": object["historyId"] as? String ?? NSNull(),
-        "providerMetadata": [
-            "gmail": [
-                "labelIds": labelIds,
-                "historyId": object["historyId"] as? String ?? NSNull()
-            ] as [String: Any]
-        ]
-    ]
+    let messageId = object["id"] as? String ?? ""
+    let threadId = object["threadId"] as? String ?? ""
+    return MailMessage(
+        id: messageId,
+        threadId: threadId,
+        accountId: account.id,
+        subject: headers["subject"],
+        from: mailAddressList(headers["from"]),
+        to: mailAddressList(headers["to"]),
+        cc: mailAddressList(headers["cc"]),
+        bcc: mailAddressList(headers["bcc"]),
+        replyTo: mailAddressList(headers["reply-to"]),
+        sentAt: parseMailDate(headers["date"]) ?? internalDate,
+        receivedAt: internalDate,
+        snippet: object["snippet"] as? String,
+        attachments: parsedPayload.attachments.map {
+            buildAttachment(account: account, messageId: messageId, threadId: threadId, part: $0)
+        },
+        labels: labelIds,
+        historyId: object["historyId"] as? String,
+        providerMetadata: MailProviderMetadata(gmail: GmailMailMetadata(
+            accountId: nil,
+            messageId: nil,
+            threadId: nil,
+            attachmentId: nil,
+            partId: nil,
+            labelIds: labelIds,
+            historyId: object["historyId"] as? String
+        ))
+    )
+}
+
+private func buildMailMessage(account: AccountConfig, object: GmailAPIMessage) -> MailMessage {
+    let headers = gmailHeaders(object)
+    let labelIds = object.labelIds ?? []
+    let internalDate = nonBlank(object.internalDate).flatMap(millisecondsDateString)
+    let parsedPayload = object.payload.map(parseGmailPayload) ?? GmailParsedPayload()
+    let messageId = object.id ?? ""
+    let threadId = object.threadId ?? ""
+    return MailMessage(
+        id: messageId,
+        threadId: threadId,
+        accountId: account.id,
+        subject: headers["subject"],
+        from: mailAddressList(headers["from"]),
+        to: mailAddressList(headers["to"]),
+        cc: mailAddressList(headers["cc"]),
+        bcc: mailAddressList(headers["bcc"]),
+        replyTo: mailAddressList(headers["reply-to"]),
+        sentAt: parseMailDate(headers["date"]) ?? internalDate,
+        receivedAt: internalDate,
+        snippet: object.snippet,
+        attachments: parsedPayload.attachments.map {
+            buildAttachment(account: account, messageId: messageId, threadId: threadId, part: $0)
+        },
+        labels: labelIds,
+        historyId: object.historyId,
+        providerMetadata: MailProviderMetadata(gmail: GmailMailMetadata(
+            accountId: nil,
+            messageId: nil,
+            threadId: nil,
+            attachmentId: nil,
+            partId: nil,
+            labelIds: labelIds,
+            historyId: object.historyId
+        ))
+    )
 }
 
 private struct GmailParsedPayload {
-    var textBody: String?
-    var htmlBody: String?
     var attachments: [GmailAttachmentPart] = []
 }
 
@@ -413,6 +537,86 @@ private func parseGmailPayload(_ payload: [String: Any]) -> GmailParsedPayload {
     var parsed = GmailParsedPayload()
     parseGmailPayloadPart(payload, parsed: &parsed)
     return parsed
+}
+
+private func parseGmailPayload(_ payload: GmailAPIPayload) -> GmailParsedPayload {
+    var parsed = GmailParsedPayload()
+    parseGmailPayloadPart(payload, parsed: &parsed)
+    return parsed
+}
+
+private func parseGmailBodyFiles(_ payload: [String: Any]) -> [GmailMessageBodyFile] {
+    var files: [GmailMessageBodyFile] = []
+    parseGmailBodyFilePart(payload, files: &files)
+    return files
+}
+
+private func parseGmailBodyFiles(_ payload: GmailAPIPayload) -> [GmailMessageBodyFile] {
+    var files: [GmailMessageBodyFile] = []
+    parseGmailBodyFilePart(payload, files: &files)
+    return files
+}
+
+private func parseGmailBodyFilePart(_ payload: [String: Any], files: inout [GmailMessageBodyFile]) {
+    let mimeType = nonBlank(payload["mimeType"] as? String)?.lowercased() ?? "application/octet-stream"
+    let body = payload["body"] as? [String: Any] ?? [:]
+    if let kind = messageBodyKind(for: mimeType),
+       !files.contains(where: { $0.kind == kind }),
+       let encoded = nonBlank(body["data"] as? String),
+       let data = dataFromBase64URLString(encoded) {
+        files.append(GmailMessageBodyFile(
+            kind: kind,
+            filename: filename(for: kind),
+            mimeType: mimeType,
+            data: data
+        ))
+    }
+
+    for part in payload["parts"] as? [[String: Any]] ?? [] {
+        parseGmailBodyFilePart(part, files: &files)
+    }
+}
+
+private func parseGmailBodyFilePart(_ payload: GmailAPIPayload, files: inout [GmailMessageBodyFile]) {
+    let mimeType = nonBlank(payload.mimeType)?.lowercased() ?? "application/octet-stream"
+    let body = payload.body
+    if let kind = messageBodyKind(for: mimeType),
+       !files.contains(where: { $0.kind == kind }),
+       let encoded = nonBlank(body?.data),
+       let data = dataFromBase64URLString(encoded) {
+        files.append(GmailMessageBodyFile(
+            kind: kind,
+            filename: filename(for: kind),
+            mimeType: mimeType,
+            data: data
+        ))
+    }
+
+    for part in payload.parts ?? [] {
+        parseGmailBodyFilePart(part, files: &files)
+    }
+}
+
+private func messageBodyKind(for mimeType: String) -> MessageMaterializedFileKind? {
+    switch mimeType {
+    case "text/plain":
+        return .bodyText
+    case "text/html":
+        return .bodyHTML
+    default:
+        return nil
+    }
+}
+
+private func filename(for kind: MessageMaterializedFileKind) -> String {
+    switch kind {
+    case .bodyText:
+        return "body.txt"
+    case .bodyHTML:
+        return "body.html"
+    case .attachment, .temporaryFile:
+        return "body"
+    }
 }
 
 private func parseGmailPayloadPart(_ payload: [String: Any], parsed: inout GmailParsedPayload) {
@@ -434,14 +638,6 @@ private func parseGmailPayloadPart(_ payload: [String: Any], parsed: inout Gmail
             mimeType: mimeType,
             sizeBytes: sizeBytes
         ))
-    } else if let data = nonBlank(body["data"] as? String),
-              let decoded = dataFromBase64URLString(data),
-              let string = String(data: decoded, encoding: .utf8) {
-        if mimeType == "text/plain", parsed.textBody == nil {
-            parsed.textBody = string
-        } else if mimeType == "text/html", parsed.htmlBody == nil {
-            parsed.htmlBody = string
-        }
     }
 
     for part in payload["parts"] as? [[String: Any]] ?? [] {
@@ -449,32 +645,64 @@ private func parseGmailPayloadPart(_ payload: [String: Any], parsed: inout Gmail
     }
 }
 
-private func buildAttachment(account: AccountConfig, message: [String: Any], part: GmailAttachmentPart) -> [String: Any] {
-    let messageId = message["id"] as? String ?? ""
-    return [
-        "id": part.id,
-        "filename": part.filename as Any? ?? NSNull(),
-        "mimeType": part.mimeType,
-        "sizeBytes": part.sizeBytes as Any? ?? NSNull(),
-        "localPath": NSNull(),
-        "downloadKey": attachmentDownloadKey(
+private func parseGmailPayloadPart(_ payload: GmailAPIPayload, parsed: inout GmailParsedPayload) {
+    let mimeType = nonBlank(payload.mimeType)?.lowercased() ?? "application/octet-stream"
+    let partId = nonBlank(payload.partId)
+    let filename = nonBlank(payload.filename)
+    let body = payload.body
+    let attachmentId = nonBlank(body?.attachmentId)
+    let sizeBytes = body?.size
+    let hasAttachmentMetadata = attachmentId != nil || filename != nil
+
+    if hasAttachmentMetadata {
+        let fallbackId = partId ?? filename ?? UUID().uuidString
+        parsed.attachments.append(GmailAttachmentPart(
+            id: attachmentId ?? fallbackId,
+            attachmentId: attachmentId,
+            partId: partId,
+            filename: filename,
+            mimeType: mimeType,
+            sizeBytes: sizeBytes
+        ))
+    }
+
+    for part in payload.parts ?? [] {
+        parseGmailPayloadPart(part, parsed: &parsed)
+    }
+}
+
+private func buildAttachment(
+    account: AccountConfig,
+    messageId: String,
+    threadId: String,
+    part: GmailAttachmentPart
+) -> MailAttachment {
+    MailAttachment(
+        id: part.id,
+        accountId: nil,
+        messageId: nil,
+        filename: part.filename,
+        mimeType: part.mimeType,
+        sizeBytes: part.sizeBytes,
+        localPath: nil,
+        downloadKey: attachmentDownloadKey(
             accountId: account.id,
             messageId: messageId,
             attachmentId: part.attachmentId,
             filename: part.filename,
             mimeType: part.mimeType
-        ) as Any? ?? NSNull(),
-        "materializationState": AttachmentMaterializationState.notMaterialized.rawValue,
-        "providerMetadata": [
-            "gmail": [
-                "accountId": account.id,
-                "messageId": messageId,
-                "threadId": message["threadId"] as? String ?? "",
-                "attachmentId": part.attachmentId as Any? ?? NSNull(),
-                "partId": part.partId as Any? ?? NSNull()
-            ] as [String: Any]
-        ]
-    ]
+        ),
+        materializationState: .notMaterialized,
+        providerMetadata: MailProviderMetadata(gmail: GmailMailMetadata(
+            accountId: account.id,
+            messageId: messageId,
+            threadId: threadId,
+            attachmentId: part.attachmentId,
+            partId: part.partId,
+            labelIds: nil,
+            historyId: nil
+        ))
+    )
 }
 
 private func gmailHeaders(_ object: [String: Any]) -> [String: String] {
@@ -493,26 +721,82 @@ private func gmailHeaders(_ object: [String: Any]) -> [String: String] {
     return output
 }
 
-private func mailAddressList(_ value: String?) -> [[String: String]] {
+private func gmailHeaders(_ object: GmailAPIMessage) -> [String: String] {
+    var output: [String: String] = [:]
+    for header in object.payload?.headers ?? [] {
+        guard let name = nonBlank(header.name),
+              let value = nonBlank(header.value) else {
+            continue
+        }
+        output[name.lowercased()] = value
+    }
+    return output
+}
+
+private func mailAddressList(_ value: String?) -> [MailAddress] {
     guard let value = nonBlank(value) else {
         return []
     }
-    return value.split(separator: ",").map {
-        ["raw": $0.trimmingCharacters(in: .whitespacesAndNewlines)]
+    return splitMailAddressList(value).map {
+        MailAddress(raw: $0)
     }
+}
+
+private func splitMailAddressList(_ value: String) -> [String] {
+    var addresses: [String] = []
+    var current = ""
+    var inQuotedString = false
+    var escaping = false
+    for character in value {
+        if escaping {
+            current.append(character)
+            escaping = false
+            continue
+        }
+        if character == "\\" {
+            current.append(character)
+            escaping = true
+            continue
+        }
+        if character == "\"" {
+            current.append(character)
+            inQuotedString.toggle()
+            continue
+        }
+        if character == ",",
+           !inQuotedString {
+            if let address = nonBlank(current) {
+                addresses.append(address)
+            }
+            current = ""
+            continue
+        }
+        current.append(character)
+    }
+    if let address = nonBlank(current) {
+        addresses.append(address)
+    }
+    return addresses
 }
 
 private func parseMailDate(_ value: String?) -> String? {
     guard let value = nonBlank(value) else {
         return nil
     }
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.dateFormat = "EEE, d MMM yyyy HH:mm:ss Z"
-    if let date = formatter.date(from: value) {
-        return ISO8601DateFormatter().string(from: date)
+    for dateFormat in [
+        "EEE, d MMM yyyy HH:mm:ss Z",
+        "EEE, d MMM yyyy HH:mm:ss zzz",
+        "d MMM yyyy HH:mm:ss Z",
+        "d MMM yyyy HH:mm:ss zzz"
+    ] {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = dateFormat
+        if let date = formatter.date(from: value) {
+            return ISO8601DateFormatter().string(from: date)
+        }
     }
-    return value
+    return nil
 }
 
 private func millisecondsDateString(_ value: String) -> String? {
@@ -528,7 +812,7 @@ private func fullQueryItems() -> [URLQueryItem] {
     ]
 }
 
-private func gmailURLComponents(path: String) -> URLComponents {
+func gmailURLComponents(path: String) -> URLComponents {
     var components = URLComponents()
     components.scheme = "https"
     components.host = "gmail.googleapis.com"

@@ -66,7 +66,8 @@ public enum MailGatewayConfigLoader {
 
     public static func loadConfig(
         configPath: String? = nil,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        validateOAuthClientSecrets: Bool = false
     ) throws -> MailGatewayConfig {
         let explicitConfigPath = nonBlank(configPath) ?? nonBlank(environment["MAIL_GATEWAY_CONFIG"])
         let usesImplicitDefaultConfig = explicitConfigPath == nil
@@ -109,11 +110,14 @@ public enum MailGatewayConfigLoader {
         }
 
         try ensureUnique(credentials.map(\.id), context: "credentials.id")
+        try ensureUniqueCredentialEnvSuffixes(credentials)
         try ensureUnique(accounts.map(\.id), context: "accounts.id")
         try ensureUnique(credentials.map(\.tokenStorePath), context: "credentials.token_store_path")
         try validateAccountCredentialLinks(credentials: credentials, accounts: accounts)
 
-        try validateOAuthClientSecretPaths(credentials)
+        if validateOAuthClientSecrets {
+            try validateOAuthClientSecretPaths(credentials)
+        }
 
         return MailGatewayConfig(
             configPath: selectedConfigPath,
@@ -127,10 +131,15 @@ public enum MailGatewayConfigLoader {
         configPath: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> [String: Any] {
-        let config = try loadConfig(configPath: configPath, environment: environment)
+        let config = try loadConfig(
+            configPath: configPath,
+            environment: environment,
+            validateOAuthClientSecrets: true
+        )
         return [
             "ok": true,
             "configPath": config.configPath,
+            "fallbackConfig": config.accounts.contains { $0.isFallback },
             "accountIds": config.accounts.map(\.id),
             "credentialIds": config.credentials.map(\.id)
         ]
@@ -192,7 +201,8 @@ public enum MailGatewayConfigLoader {
                     provider: .gmail,
                     emailAddress: "\(defaultAccountId)@example.invalid",
                     credentialId: credential.id,
-                    defaultLabelIds: ["INBOX"]
+                    defaultLabelIds: ["INBOX"],
+                    isFallback: true
                 )
             ]
         )
@@ -243,7 +253,7 @@ private func parseTomlSubset(_ source: String) throws -> ParsedToml {
     var section = TomlSection.none
 
     for rawLine in source.split(separator: "\n", omittingEmptySubsequences: false) {
-        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        let line = try stripTomlComment(String(rawLine)).trimmingCharacters(in: .whitespacesAndNewlines)
         if line.isEmpty || line.hasPrefix("#") {
             continue
         }
@@ -286,7 +296,7 @@ private func parseTomlSubset(_ source: String) throws -> ParsedToml {
 private func parseTomlValue(_ rawValue: String) throws -> Any {
     if rawValue.hasPrefix("\""),
        rawValue.hasSuffix("\"") {
-        return String(rawValue.dropFirst().dropLast())
+        return try parseTomlBasicString(rawValue)
     }
     if rawValue.hasPrefix("["),
        rawValue.hasSuffix("]") {
@@ -300,13 +310,80 @@ private func parseTomlValue(_ rawValue: String) throws -> Any {
                   trimmed.hasSuffix("\"") else {
                 throw configError("array values must be strings")
             }
-            return String(trimmed.dropFirst().dropLast())
+            return try parseTomlBasicString(trimmed)
         }
     }
     throw configError("config contains an unsupported TOML value: \(rawValue)")
 }
 
-private func splitTomlArray(_ source: String) -> [String] {
+private func stripTomlComment(_ source: String) throws -> String {
+    var output = ""
+    var inString = false
+    var escaping = false
+    for character in source {
+        if escaping {
+            output.append(character)
+            escaping = false
+            continue
+        }
+        if character == "\\" && inString {
+            output.append(character)
+            escaping = true
+            continue
+        }
+        if character == "\"" {
+            output.append(character)
+            inString.toggle()
+            continue
+        }
+        if character == "#",
+           !inString {
+            return output
+        }
+        output.append(character)
+    }
+    guard !inString else {
+        throw configError("config contains an unterminated string")
+    }
+    return output
+}
+
+private func parseTomlBasicString(_ rawValue: String) throws -> String {
+    var output = ""
+    var escaping = false
+    let inner = rawValue.dropFirst().dropLast()
+    for character in inner {
+        if escaping {
+            switch character {
+            case "\"":
+                output.append("\"")
+            case "\\":
+                output.append("\\")
+            case "n":
+                output.append("\n")
+            case "r":
+                output.append("\r")
+            case "t":
+                output.append("\t")
+            default:
+                throw configError("config contains an unsupported string escape: \\\(character)")
+            }
+            escaping = false
+            continue
+        }
+        if character == "\\" {
+            escaping = true
+            continue
+        }
+        output.append(character)
+    }
+    guard !escaping else {
+        throw configError("config contains an unterminated string escape")
+    }
+    return output
+}
+
+private func splitTomlArray(_ source: String) throws -> [String] {
     var values: [String] = []
     var current = ""
     var inString = false
@@ -337,6 +414,9 @@ private func splitTomlArray(_ source: String) -> [String] {
     }
     if !current.isEmpty {
         values.append(current)
+    }
+    guard !inString else {
+        throw configError("array contains an unterminated string")
     }
     return values
 }
@@ -410,8 +490,8 @@ private func parseCredentialConfig(
 private func parseAccountConfig(_ record: [String: Any], index: Int) throws -> AccountConfig {
     let contextBase = "accounts[\(index)]"
     let emailAddress = try readString(record["email_address"], "\(contextBase).email_address")
-    if !emailAddress.contains("@") {
-        throw configError("\(contextBase).email_address must contain @")
+    if !isValidConfiguredMailboxAddress(emailAddress) {
+        throw configError("\(contextBase).email_address must be a valid mailbox address")
     }
     return AccountConfig(
         id: try readString(record["id"], "\(contextBase).id"),
@@ -420,6 +500,37 @@ private func parseAccountConfig(_ record: [String: Any], index: Int) throws -> A
         credentialId: try readString(record["credential_id"], "\(contextBase).credential_id"),
         defaultLabelIds: try readOptionalStringArray(record["default_label_ids"], "\(contextBase).default_label_ids")
     )
+}
+
+private func isValidConfiguredMailboxAddress(_ emailAddress: String) -> Bool {
+    if emailAddress.unicodeScalars.contains(where: isWhitespaceOrControlCharacter) {
+        return false
+    }
+
+    let parts = emailAddress.split(separator: "@", omittingEmptySubsequences: false)
+    guard parts.count == 2 else {
+        return false
+    }
+
+    let localPart = String(parts[0])
+    let domainPart = String(parts[1])
+    guard !localPart.isEmpty,
+          !domainPart.isEmpty,
+          !localPart.hasPrefix("."),
+          !localPart.hasSuffix("."),
+          domainPart.contains("."),
+          !domainPart.hasPrefix("."),
+          !domainPart.hasSuffix("."),
+          !domainPart.contains("..") else {
+        return false
+    }
+
+    return true
+}
+
+private func isWhitespaceOrControlCharacter(_ scalar: Unicode.Scalar) -> Bool {
+    CharacterSet.whitespacesAndNewlines.contains(scalar) ||
+        CharacterSet.controlCharacters.contains(scalar)
 }
 
 private func resolveCredentialPath(_ request: CredentialPathRequest) throws -> String {
@@ -504,6 +615,22 @@ private func ensureUnique(_ values: [String], context: String) throws {
             throw configError("\(context) contains a duplicate value: \(value)")
         }
         seen.insert(value)
+    }
+}
+
+private func ensureUniqueCredentialEnvSuffixes(_ credentials: [CredentialConfig]) throws {
+    var seen: [String: String] = [:]
+    for credential in credentials {
+        let suffix = MailGatewayConfigLoader.getCredentialPathEnvVarName(
+            credentialId: credential.id,
+            pathKey: "token_store_path"
+        )
+        if let existing = seen[suffix] {
+            throw configError(
+                "credentials.id values \(existing) and \(credential.id) resolve to the same environment variable suffix"
+            )
+        }
+        seen[suffix] = credential.id
     }
 }
 

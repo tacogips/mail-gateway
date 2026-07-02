@@ -17,12 +17,15 @@ public enum MailGatewayErrorCode: String, Sendable {
     case authRequired = "AUTH_REQUIRED"
     case configInvalid = "CONFIG_INVALID"
     case credentialNotFound = "CREDENTIAL_NOT_FOUND"
+    case fileOperationFailed = "FILE_OPERATION_FAILED"
+    case invalidDownloadKey = "INVALID_DOWNLOAD_KEY"
     case invalidArgument = "INVALID_ARGUMENT"
     case messageNotFound = "MESSAGE_NOT_FOUND"
     case providerApiError = "PROVIDER_API_ERROR"
     case providerRateLimited = "PROVIDER_RATE_LIMITED"
     case sendDisabledInReader = "SEND_DISABLED_IN_READER"
     case sendNotSupported = "SEND_NOT_SUPPORTED"
+    case unexpectedError = "UNEXPECTED_ERROR"
 }
 
 public struct MailGatewayCommandResult: Sendable {
@@ -125,6 +128,23 @@ public struct AccountConfig: Sendable {
     public let emailAddress: String
     public let credentialId: String
     public let defaultLabelIds: [String]
+    public let isFallback: Bool
+
+    public init(
+        id: String,
+        provider: MailProvider,
+        emailAddress: String,
+        credentialId: String,
+        defaultLabelIds: [String],
+        isFallback: Bool = false
+    ) {
+        self.id = id
+        self.provider = provider
+        self.emailAddress = emailAddress
+        self.credentialId = credentialId
+        self.defaultLabelIds = defaultLabelIds
+        self.isFallback = isFallback
+    }
 }
 
 public struct MailGatewayConfig: Sendable {
@@ -134,17 +154,23 @@ public struct MailGatewayConfig: Sendable {
     public let accounts: [AccountConfig]
 }
 
-public struct MailGatewayReaderService {
+public struct MailGatewayService {
     let config: MailGatewayConfig
     let cacheRoot: String
     let attachmentRoot: String
     let allowedSendAttachmentRoots: [String]
+    let providerAdapter: MailProviderAdapter
 
     public init(config: MailGatewayConfig) {
+        self.init(config: config, providerAdapter: GmailProviderAdapter())
+    }
+
+    init(config: MailGatewayConfig, providerAdapter: MailProviderAdapter) {
         self.config = config
         self.cacheRoot = normalizedPath(config.storage.cacheDir)
         self.attachmentRoot = normalizedPath(config.storage.attachmentDir)
         self.allowedSendAttachmentRoots = config.storage.allowedSendAttachmentRoots.map(normalizedPath)
+        self.providerAdapter = providerAdapter
     }
 
     public func listAccounts() -> [[String: Any]] {
@@ -182,12 +208,17 @@ public struct MailGatewayReaderService {
         labelIds: [String]? = nil,
         receivedAfter: String? = nil,
         receivedBefore: String? = nil,
+        first: Int = 20,
+        after: String? = nil,
         includeEdges: Bool = true,
-        includeNodeDetails: Bool = true
+        includeNodeDetails: Bool = true,
+        includeFullNodeDetails: Bool = true
     ) throws -> [String: Any] {
         let account = try requireAccount(accountId)
         let credential = try requireCredential(account.credentialId)
-        return try GmailLiveReader().searchThreads(
+        let pageSize = try validateThreadSearchFirst(first)
+        let pageToken = try validateThreadSearchAfter(after)
+        return try providerAdapter.searchThreads(GmailThreadSearchRequest(
             account: account,
             credential: credential,
             query: query,
@@ -196,21 +227,32 @@ public struct MailGatewayReaderService {
             labelIds: labelIds,
             receivedAfter: receivedAfter,
             receivedBefore: receivedBefore,
+            first: pageSize,
+            after: pageToken,
             includeEdges: includeEdges,
-            includeNodeDetails: includeNodeDetails
-        )
+            includeNodeDetails: includeNodeDetails,
+            includeFullNodeDetails: includeFullNodeDetails
+        )).graphQLObject()
     }
 
     public func getThread(accountId: String, threadId: String) throws -> Any {
         let account = try requireAccount(accountId)
         let credential = try requireCredential(account.credentialId)
-        return try GmailLiveReader().getThread(account: account, credential: credential, threadId: threadId)
+        return try providerAdapter.getThread(
+            account: account,
+            credential: credential,
+            threadId: threadId
+        ).graphQLObject()
     }
 
     public func getMessage(accountId: String, messageId: String) throws -> Any {
         let account = try requireAccount(accountId)
         let credential = try requireCredential(account.credentialId)
-        return try GmailLiveReader().getMessage(account: account, credential: credential, messageId: messageId)
+        return try providerAdapter.getMessage(
+            account: account,
+            credential: credential,
+            messageId: messageId
+        ).graphQLObject()
     }
 
     public func getAttachment(accountId: String, messageId: String, attachmentId: String) throws -> Any {
@@ -220,50 +262,44 @@ public struct MailGatewayReaderService {
             .appendingPathComponent(messageId, isDirectory: true)
             .path
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: attachmentDirectory)) ?? []
-        var cachedPrefixes: [String] = []
-        for prefix in [
-            "\(attachmentId)-",
-            "\(sanitizedPathComponent(attachmentId))-",
-            attachmentStorageFilenamePrefix(attachmentId: attachmentId)
-        ] where !cachedPrefixes.contains(prefix) {
-            cachedPrefixes.append(prefix)
-        }
+        let cachedPrefix = attachmentStorageFilenamePrefix(attachmentId: attachmentId)
         if let matchingEntry = entries.first(where: { entry in
-            cachedPrefixes.contains { entry.hasPrefix($0) }
+            entry.hasPrefix(cachedPrefix)
         }) {
             let localPath = normalizedPath(URL(fileURLWithPath: attachmentDirectory)
                 .appendingPathComponent(matchingEntry)
                 .path)
-            let matchedPrefix = cachedPrefixes.first { matchingEntry.hasPrefix($0) } ?? ""
-            let filename = String(matchingEntry.dropFirst(matchedPrefix.count))
-            return [
-                "id": attachmentId,
-                "accountId": accountId,
-                "messageId": messageId,
-                "filename": filename.isEmpty ? NSNull() : filename as Any,
-                "mimeType": "application/octet-stream",
-                "sizeBytes": NSNull(),
-                "localPath": localPath,
-                "downloadKey": attachmentDownloadKey(
+            let filename = String(matchingEntry.dropFirst(cachedPrefix.count))
+            let attributes = try? FileManager.default.attributesOfItem(atPath: localPath)
+            return MailAttachment(
+                id: attachmentId,
+                accountId: accountId,
+                messageId: messageId,
+                filename: filename.isEmpty ? nil : filename,
+                mimeType: "application/octet-stream",
+                sizeBytes: (attributes?[.size] as? NSNumber)?.intValue,
+                localPath: localPath,
+                downloadKey: attachmentDownloadKey(
                     accountId: accountId,
                     messageId: messageId,
                     attachmentId: attachmentId,
                     filename: filename,
                     mimeType: "application/octet-stream"
-                ) as Any? ?? NSNull(),
-                "materializationState": AttachmentMaterializationState.cached.rawValue
-            ]
+                ),
+                materializationState: .cached,
+                providerMetadata: nil
+            ).graphQLObject()
         }
         let credential = try requireCredential(account.credentialId)
         guard canAttemptLiveGmailRead(credential: credential) else {
             return NSNull()
         }
-        return try GmailLiveReader().getAttachment(
+        return try providerAdapter.getAttachment(
             account: account,
             credential: credential,
             messageId: messageId,
             attachmentId: attachmentId
-        )
+        ).graphQLObject()
     }
 
     public func getAuthStatus(credentialId: String) throws -> [String: Any] {
@@ -340,7 +376,19 @@ public struct MailGatewayReaderService {
         var prunedPaths: [String] = []
         for target in targets {
             let normalizedTarget = try assertWithinAttachmentRoot(target)
-            try? FileManager.default.removeItem(atPath: normalizedTarget)
+            do {
+                if FileManager.default.fileExists(atPath: normalizedTarget) {
+                    try FileManager.default.removeItem(atPath: normalizedTarget)
+                    prunedPaths.append(normalizedTarget)
+                }
+            } catch {
+                throw MailGatewayError(
+                    "Failed to prune cache path",
+                    code: .invalidArgument,
+                    exitCode: .generalError,
+                    details: ["path": normalizedTarget, "cause": error.localizedDescription]
+                )
+            }
             if all {
                 try FileManager.default.createDirectory(
                     atPath: attachmentRoot,
@@ -348,7 +396,6 @@ public struct MailGatewayReaderService {
                     attributes: [.posixPermissions: 0o700]
                 )
             }
-            prunedPaths.append(normalizedTarget)
         }
         return ["prunedPaths": prunedPaths]
     }
@@ -377,14 +424,16 @@ public struct MailGatewayReaderService {
             : credential?.accessMode.rawValue ?? AccessMode.read.rawValue
         let capabilities: [String: Any] = [
             "canRead": true,
-            "canSend": sendEnabled && credential?.accessMode == .readSend,
+            "canSend": sendEnabled && credential?.accessMode == .readSend && !account.isFallback,
             "configuredAccessMode": configuredAccessMode,
-            "authState": tokenState.rawValue
+            "authState": tokenState.rawValue,
+            "isFallback": account.isFallback
         ]
         return [
             "id": account.id,
             "provider": graphQL ? account.provider.graphQLValue : account.provider.rawValue,
             "emailAddress": account.emailAddress,
+            "isFallback": account.isFallback,
             "capabilities": capabilities
         ]
     }
@@ -428,4 +477,31 @@ public struct MailGatewayReaderService {
         return normalizedTarget
     }
 
+}
+
+public typealias MailGatewayReaderService = MailGatewayService
+
+private func validateThreadSearchFirst(_ first: Int) throws -> Int {
+    guard (1...500).contains(first) else {
+        throw MailGatewayError(
+            "ThreadSearchInput.first must be an integer from 1 through 500",
+            code: .invalidArgument,
+            exitCode: .graphqlExecutionError
+        )
+    }
+    return first
+}
+
+private func validateThreadSearchAfter(_ after: String?) throws -> String? {
+    guard let after else {
+        return nil
+    }
+    guard let pageToken = nonBlank(after) else {
+        throw MailGatewayError(
+            "ThreadSearchInput.after must not be blank",
+            code: .invalidArgument,
+            exitCode: .graphqlExecutionError
+        )
+    }
+    return pageToken
 }
